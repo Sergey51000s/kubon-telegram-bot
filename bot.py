@@ -17,7 +17,7 @@ from aiohttp import web
 import aiohttp
 import os
 
-# Токены из окружения Bothost
+# Получаем токены из окружения Bothost
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or
     os.getenv("TELEGRAM_BOT_TOKEN") or
@@ -134,29 +134,39 @@ async def process_problem(message: Message, state: FSMContext):
     await state.clear()
 
 async def on_startup(bot: Bot):
-    # Устанавливаем webhook при запуске
-    webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"  # уникальный путь
+    webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"
     webhook_url = f"https://{os.getenv('BOTHOST_DOMAIN', 'your-domain.bothost.ru')}{webhook_path}"
+
+    # Удаляем старый webhook, если был
     await bot.delete_webhook(drop_pending_updates=True)
+    print("Старый webhook удалён")
+
+    # Устанавливаем новый
     await bot.set_webhook(webhook_url)
     print(f"Webhook установлен на: {webhook_url}")
 
 async def on_shutdown(bot: Bot):
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Webhook удалён")
+    print("Webhook удалён при остановке")
 
 def main():
     print("Бот запущен! Используем webhook.")
     app = web.Application()
-    webhook_handler = SimpleRequestHandler(
+
+    # Регистрируем обработчик webhook
+    SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-    )
-    webhook_handler.register(app, path=f"/webhook/{TELEGRAM_TOKEN[-10:]}")
+    ).register(app, path=f"/webhook/{TELEGRAM_TOKEN[-10:]}")
+
     setup_application(app, dp, bot=bot)
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
+
+    # Добавляем хуки запуска и остановки
+    app.on_startup.append(lambda app: on_startup(bot))
+    app.on_shutdown.append(lambda app: on_shutdown(bot))
+
+    port = int(os.getenv("PORT", 3000))
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
