@@ -122,8 +122,8 @@ async def process_problem(message: Message, state: FSMContext):
                     f"Источник: Telegram-бот Kubon\n"
                     f"Дата: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
                 ),
-                "priority": "medium",
-                "kind_id": 1,  # если знаешь реальный ID типа заявки — замени
+                "priority": "normal",  # ← ИСПРАВЛЕНО: правильный код из твоей таблицы приоритетов
+                # "kind_id": 1,        # ← если появится ошибка про kind_id — раскомментируй и проверь ID в настройках
             }
         }
 
@@ -136,7 +136,7 @@ async def process_problem(message: Message, state: FSMContext):
                     else:
                         text = await resp.text()
                         print(f"Ошибка OKDesk: статус {resp.status}, ответ: {text}")
-                        await message.answer("Данные получены, но произошла ошибка при создании заявки в OKDesk. Мы свяжемся вручную.")
+                        await message.answer(f"Ошибка при создании заявки в OKDesk (код {resp.status}). Мы свяжемся вручную.")
         except Exception as e:
             print(f"Ошибка отправки в OKDesk: {type(e).__name__}: {str(e)}")
             await message.answer("Не удалось отправить заявку в систему. Свяжемся вручную.")
