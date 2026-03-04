@@ -30,8 +30,11 @@ if not TELEGRAM_TOKEN:
     print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_TOKEN не найден!")
     sys.exit(1)
 
-OKDESK_URL = f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}" \
-    if OKDESK_SUBDOMAIN and OKDESK_API_TOKEN else None
+if not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
+    print("ОШИБКА: OKDesk переменные не найдены. Добавьте OKDESK_API_TOKEN и OKDESK_SUBDOMAIN в Environment variables.")
+    OKDESK_URL = None
+else:
+    OKDESK_URL = f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}"
 
 bot = Bot(
     token=TELEGRAM_TOKEN,
@@ -116,22 +119,30 @@ async def process_problem(message: Message, state: FSMContext):
                     f"Город: {data.get('city')}\n"
                     f"Компания/ИП: {data.get('company')}\n"
                     f"Описание проблемы: {data.get('problem')}\n\n"
-                    f"Источник: Telegram-бот Kubon"
+                    f"Источник: Telegram-бот Kubon\n"
+                    f"Дата: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
                 ),
                 "priority": "medium",
-                "kind_id": 1,
+                "kind_id": 1,  # если знаешь реальный ID типа заявки — замени
             }
         }
 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(OKDESK_URL, json=issue_data) as resp:
-                    print(f"OKDesk статус: {resp.status}")
-                    if resp.status not in (200, 201):
+                    if resp.status in (200, 201):
+                        print("Заявка создана успешно в OKDesk!")
+                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
+                    else:
                         text = await resp.text()
-                        print(f"Ошибка OKDesk: {text}")
+                        print(f"Ошибка OKDesk: статус {resp.status}, ответ: {text}")
+                        await message.answer("Данные получены, но произошла ошибка при создании заявки в OKDesk. Мы свяжемся вручную.")
         except Exception as e:
             print(f"Ошибка отправки в OKDesk: {type(e).__name__}: {str(e)}")
+            await message.answer("Не удалось отправить заявку в систему. Свяжемся вручную.")
+    else:
+        print("OKDesk URL не настроен")
+        await message.answer("OKDesk не подключён — данные получены.")
 
     await state.clear()
 
