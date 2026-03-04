@@ -12,12 +12,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 
 import aiohttp
 
-# Получаем токены из окружения Bothost
+# Токены из окружения Bothost
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or
     os.getenv("TELEGRAM_BOT_TOKEN") or
@@ -29,7 +27,7 @@ OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN")
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN")
 
 if not TELEGRAM_TOKEN:
-    print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_TOKEN не найден в окружении!")
+    print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_TOKEN не найден!")
     sys.exit(1)
 
 OKDESK_URL = f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}" \
@@ -54,7 +52,7 @@ class Form(StatesGroup):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    print(f"Получен /start от пользователя {message.from_user.id}")
+    print(f"Получен /start от {message.from_user.id}")
     await state.clear()
     await message.answer(
         "Здравствуйте, я — технический специалист компании Kubon.\n"
@@ -137,62 +135,10 @@ async def process_problem(message: Message, state: FSMContext):
 
     await state.clear()
 
-async def on_startup():
-    webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"
-
-    # Варианты доменов — пробуй по очереди, меняй здесь и перезагружай
-    domain = (
-        os.getenv("BOTHOST_DOMAIN") or
-        os.getenv("DOMAIN") or
-        os.getenv("HOST") or
-        "bot-1772435567-9475-sergeykubon2026.bothost.ru" or  # вариант 1
-        "sergeykubon2026.bothost.ru" or                      # вариант 2
-        "kubonsupportbot.bothost.ru" or                      # вариант 3
-        "bot17724355679475sergeykubon2026.bothost.ru"        # вариант 4 без подчёркиваний
-    )
-
-    webhook_url = f"https://{domain}{webhook_path}"
-
-    print(f"Попытка удалить старый webhook...")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("Старый webhook успешно удалён")
-    except Exception as e:
-        print(f"Не удалось удалить старый webhook: {e}")
-
-    print(f"Устанавливаем webhook на: {webhook_url}")
-    try:
-        await bot.set_webhook(webhook_url)
-        print("Webhook успешно установлен!")
-    except Exception as e:
-        print(f"Ошибка установки webhook: {e}")
-        print("Бот продолжит работу, но без webhook — попробуй polling или проверь домен")
-
-async def on_shutdown():
-    print("Удаляем webhook при остановке...")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception as e:
-        print(f"Ошибка удаления webhook: {e}")
-
-def main():
-    print("Бот запущен! Используем webhook.")
-    app = web.Application()
-
-    webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    ).register(app, path=webhook_path)
-
-    setup_application(app, dp, bot=bot)
-
-    app.on_startup.append(lambda _: asyncio.create_task(on_startup()))
-    app.on_shutdown.append(lambda _: asyncio.create_task(on_shutdown()))
-
-    port = int(os.getenv("PORT", 3000))
-    print(f"Запускаем веб-сервер на порту {port}")
-    web.run_app(app, host="0.0.0.0", port=port)
+async def main():
+    print("Бот запущен! Используем polling.")
+    print("Токен:", TELEGRAM_TOKEN[:10] + "...")
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
