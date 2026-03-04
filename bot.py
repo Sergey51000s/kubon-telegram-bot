@@ -17,7 +17,7 @@ from aiohttp import web
 
 import aiohttp
 
-# Получаем переменные из окружения Bothost
+# Получаем токены из окружения Bothost
 TELEGRAM_TOKEN = (
     os.getenv("TELEGRAM_TOKEN") or
     os.getenv("TELEGRAM_BOT_TOKEN") or
@@ -47,10 +47,10 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
     full_name = State()
-    phone     = State()
-    city      = State()
-    company   = State()
-    problem   = State()
+    phone = State()
+    city = State()
+    company = State()
+    problem = State()
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -139,33 +139,54 @@ async def process_problem(message: Message, state: FSMContext):
 
 async def on_startup():
     webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"
-    # Bothost обычно даёт домен в переменной BOTHOST_DOMAIN или нужно посмотреть в дашборде
-    domain = os.getenv("BOTHOST_DOMAIN") or os.getenv("DOMAIN") or "your-bot-domain.bothost.ru"
+
+    # Варианты доменов — пробуй по очереди, меняй здесь и перезагружай
+    domain = (
+        os.getenv("BOTHOST_DOMAIN") or
+        os.getenv("DOMAIN") or
+        os.getenv("HOST") or
+        "bot-1772435567-9475-sergeykubon2026.bothost.ru" or  # вариант 1
+        "sergeykubon2026.bothost.ru" or                      # вариант 2
+        "kubonsupportbot.bothost.ru" or                      # вариант 3
+        "bot17724355679475sergeykubon2026.bothost.ru"        # вариант 4 без подчёркиваний
+    )
+
     webhook_url = f"https://{domain}{webhook_path}"
 
-    print("Удаляем старый webhook...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    print(f"Попытка удалить старый webhook...")
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("Старый webhook успешно удалён")
+    except Exception as e:
+        print(f"Не удалось удалить старый webhook: {e}")
 
-    print(f"Устанавливаем webhook: {webhook_url}")
-    await bot.set_webhook(webhook_url)
+    print(f"Устанавливаем webhook на: {webhook_url}")
+    try:
+        await bot.set_webhook(webhook_url)
+        print("Webhook успешно установлен!")
+    except Exception as e:
+        print(f"Ошибка установки webhook: {e}")
+        print("Бот продолжит работу, но без webhook — попробуй polling или проверь домен")
 
 async def on_shutdown():
     print("Удаляем webhook при остановке...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        print(f"Ошибка удаления webhook: {e}")
 
 def main():
     print("Бот запущен! Используем webhook.")
     app = web.Application()
 
-    # Регистрируем обработчик webhook
+    webhook_path = f"/webhook/{TELEGRAM_TOKEN[-10:]}"
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
-    ).register(app, path=f"/webhook/{TELEGRAM_TOKEN[-10:]}")
+    ).register(app, path=webhook_path)
 
     setup_application(app, dp, bot=bot)
 
-    # Хуки запуска/остановки
     app.on_startup.append(lambda _: asyncio.create_task(on_startup()))
     app.on_shutdown.append(lambda _: asyncio.create_task(on_shutdown()))
 
