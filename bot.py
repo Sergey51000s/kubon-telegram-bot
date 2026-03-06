@@ -2,14 +2,14 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -39,16 +39,22 @@ dp = Dispatcher(storage=storage)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
-    phone = State()           # Телефон в начале
-    serial_number = State()   # Серийный номер
+    select_object = State()   # Выбор объекта обслуживания
     full_name = State()
     city = State()
     company = State()
     problem = State()
 
-async def get_company_id_by_phone(phone: str):
-    """Найти company_id по телефону контакта"""
-    params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
+# Кнопка СТАРТ
+start_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="СТАРТ")]],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
+async def get_contact_by_username(username: str):
+    """Найти контакт по Telegram username"""
+    params = {"api_token": OKDESK_API_TOKEN, "telegram_username": username}
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             if resp.status != 200:
@@ -57,116 +63,113 @@ async def get_company_id_by_phone(phone: str):
             contacts = data.get("contacts", [])
             if not contacts:
                 return None
-            return contacts[0].get("company_id")
+            return contacts[0]  # первый найденный контакт
 
-async def get_robot_by_serial(company_id: int, serial_number: str):
-    """Найти объект обслуживания по серийному номеру и компании"""
-    params = {"api_token": OKDESK_API_TOKEN, "serial_number": serial_number, "company_id": company_id}
+async def get_objects_by_company(company_id: int):
+    """Получить все объекты обслуживания компании"""
+    params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
             if resp.status != 200:
-                return None
+                return []
             data = await resp.json()
-            entities = data.get("maintenance_entities", [])
-            if not entities:
-                return None
-            return entities[0]  # возвращаем первый найденный объект
-
-async def check_client_and_robot(phone: str, serial_number: str):
-    """Полная проверка: клиент + робот + срок 2 месяцев"""
-    company_id = await get_company_id_by_phone(phone)
-    if not company_id:
-        return False, "Клиент с таким телефоном не найден", None
-
-    robot = await get_robot_by_serial(company_id, serial_number)
-    if not robot:
-        return False, "Робот с таким серийным номером не найден у этого клиента", None
-
-    entity_id = robot.get("id")
-    custom_fields = robot.get("custom_fields", {})
-    start_date_str = custom_fields.get("free_service_start_date")
-
-    if not start_date_str:
-        return False, "У робота не указана дата начала бесплатного обслуживания", entity_id
-
-    try:
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-        two_months_later = start_date + timedelta(days=60)
-        if datetime.now() > two_months_later:
-            return True, "Платное обслуживание (прошло более 2 месяцев)", entity_id
-        else:
-            return True, "Бесплатное обслуживание", entity_id
-    except Exception as e:
-        return False, f"Неверный формат даты в поле free_service_start_date: {e}", entity_id
+            return data.get("maintenance_entities", [])
 
 @dp.message(CommandStart())
+@dp.message(lambda message: message.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
-    print(f"Получен /start от {message.from_user.id}")
+    username = message.from_user.username
+    print(f"Получен /start или СТАРТ от @{username} ({message.from_user.id})")
+
     await state.clear()
-    await message.answer("Здравствуйте! Для регистрации заявки укажите ваш номер телефона (+7...):")
-    await state.set_state(Form.phone)
 
-@dp.message(Form.phone)
-async def process_phone(message: Message, state: FSMContext):
-    phone = message.text.strip()
-    print(f"Получен телефон: {phone}")
-    await state.update_data(phone=phone)
-    await message.answer("Укажите серийный номер вашего робота:")
-    await state.set_state(Form.serial_number)
-
-@dp.message(Form.serial_number)
-async def process_serial_number(message: Message, state: FSMContext):
-    serial = message.text.strip()
-    print(f"Получен серийный номер: {serial}")
-
-    data = await state.get_data()
-    phone = data.get("phone")
-
-    success, msg, entity_id = await check_client_and_robot(phone, serial)
-
-    if not success:
-        await message.answer(f"{msg}. Заявка не может быть создана.")
-        await state.clear()
+    if not username:
+        await message.answer("У вас не установлен username в Telegram. Пожалуйста, установите @username в настройках профиля и попробуйте снова.")
         return
 
-    await state.update_data(entity_id=entity_id)
+    contact = await get_contact_by_username(username)
 
-    if "платное" in msg.lower():
-        await message.answer(f"{msg}. Стоимость заявки — 5000 ₽. Продолжить? (Да/Нет)")
-        await state.update_data(is_paid=True, paid_confirmed=False)
-    else:
-        await state.update_data(is_paid=False)
-        await message.answer("Бесплатное обслуживание активно. Укажите ФИО:")
-        await state.set_state(Form.full_name)
+    if not contact:
+        await message.answer(
+            "Здравствуйте!\n\nВаше имя пользователя Telegram не найдено в нашей базе клиентов.\n"
+            "Пожалуйста, обратитесь к вашему менеджеру для регистрации.",
+            reply_markup=start_kb
+        )
+        return
+
+    fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
+    company_id = contact.get("company_id")
+
+    if not company_id:
+        await message.answer(f"Здравствуйте, {fio}!\nВаша карточка не привязана к компании. Обратитесь к менеджеру.")
+        return
+
+    objects = await get_objects_by_company(company_id)
+
+    if not objects:
+        await message.answer(f"Здравствуйте, {fio}!\nУ вас пока нет зарегистрированных объектов обслуживания.")
+        return
+
+    # Формируем список объектов для выбора
+    object_list = "\n".join(
+        f"{i+1}. {obj.get('name', 'Без названия')} (серийный № {obj.get('serial_number', 'не указан')})"
+        for i, obj in enumerate(objects)
+    )
+
+    await message.answer(
+        f"Здравствуйте, {fio}!\n"
+        f"Пожалуйста, выберите объект, с которым возникла проблема:\n\n"
+        f"{object_list}",
+        reply_markup=start_kb
+    )
+
+    await state.update_data(contact=contact, objects=objects)
+    await state.set_state(Form.select_object)
+
+@dp.message(Form.select_object)
+async def process_object_selection(message: Message, state: FSMContext):
+    text = message.text.strip()
+    data = await state.get_data()
+    objects = data.get("objects", [])
+
+    # Пытаемся понять, какой номер выбрал пользователь
+    try:
+        num = int(text.split(".")[0]) - 1
+        if 0 <= num < len(objects):
+            selected = objects[num]
+            await state.update_data(selected_object=selected)
+            await message.answer("Бесплатное обслуживание активно. Укажите ФИО (если нужно обновить):")
+            await state.set_state(Form.full_name)
+            return
+    except:
+        pass
+
+    await message.answer("Пожалуйста, выберите номер из списка (например, 1 или 2)")
 
 @dp.message(Form.full_name)
 async def process_full_name(message: Message, state: FSMContext):
-    print(f"Получено ФИО: {message.text}")
     await state.update_data(full_name=message.text.strip())
     await message.answer("Город:")
     await state.set_state(Form.city)
 
-# (остальные handlers без изменений — city, company, problem)
+# (остальные шаги анкеты без изменений — city, company, problem)
 
 @dp.message(Form.problem)
 async def process_problem(message: Message, state: FSMContext):
-    print(f"Получено описание проблемы: {message.text}")
     await state.update_data(problem=message.text.strip())
     data = await state.get_data()
 
     summary = (
-        "Спасибо, ожидайте звонок!\n\n"
+        f"Спасибо, ожидайте звонок!\n\n"
         f"Ваши данные:\n"
         f"ФИО: {data.get('full_name')}\n"
         f"Телефон: {data.get('phone')}\n"
-        f"Серийный номер: {data.get('serial_number')}\n"
-        f"Город: {data.get('city')}\n"
-        f"Компания/ИП: {data.get('company')}\n"
+        f"Объект: {data.get('selected_object', {}).get('name', 'не выбран')}\n"
         f"Проблема: {data.get('problem')}"
     )
     await message.answer(summary)
 
-    # Отправка в OKDesk
+    # Отправка заявки в OKDesk
     if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
         issue_data = {
             "issue": {
@@ -183,17 +186,12 @@ async def process_problem(message: Message, state: FSMContext):
                     json=issue_data
                 ) as resp:
                     if resp.status in (200, 201):
-                        print("Заявка создана успешно!")
                         await message.answer("Заявка успешно отправлена в систему OKDesk!")
                     else:
                         text = await resp.text()
-                        print(f"Ошибка OKDesk: {resp.status} - {text}")
-                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
+                        await message.answer(f"Ошибка при отправке заявки (код {resp.status}). Свяжемся вручную.")
         except Exception as e:
-            print(f"Ошибка отправки: {e}")
             await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
-    else:
-        await message.answer("OKDesk не настроен — данные получены.")
 
     await state.clear()
 
