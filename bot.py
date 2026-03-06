@@ -42,6 +42,7 @@ start_kb = ReplyKeyboardMarkup(
 )
 
 async def get_contact_by_user_id(user_id: int):
+    """Поиск контакта по custom field telegram_user_id"""
     params = {"api_token": OKDESK_API_TOKEN}
     custom_filter = f"custom_fields[telegram_user_id]={user_id}"
     async with aiohttp.ClientSession() as session:
@@ -126,7 +127,7 @@ async def process_object_selection(message: Message, state: FSMContext):
             selected = objects[num]
             await state.update_data(selected_object=selected)
             await message.answer(
-                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')}) \n\n"
+                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')})\n\n"
                 "Опишите проблему:"
             )
             await state.set_state(Form.problem)
@@ -151,7 +152,6 @@ async def process_problem(message: Message, state: FSMContext):
     )
     await message.answer(summary, reply_markup=start_kb)
 
-    # Отправка заявки в OKDesk (добавь, если нужно)
     await state.clear()
 
 async def main():
