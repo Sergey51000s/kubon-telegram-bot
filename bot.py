@@ -15,18 +15,12 @@ from aiogram.enums import ParseMode
 
 import aiohttp
 
-TELEGRAM_TOKEN = (
-    os.getenv("TELEGRAM_TOKEN") or
-    os.getenv("TELEGRAM_BOT_TOKEN") or
-    os.getenv("BOT_TOKEN") or
-    os.getenv("TOKEN")
-)
-
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN")
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN")
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
-    print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные OKDesk/Telegram найдены!")
+    print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
     sys.exit(1)
 
 OKDESK_API_BASE = f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1"
@@ -47,13 +41,27 @@ start_kb = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-async def get_contact_by_user_id(user_id: int):
+async def get_company_by_user_id(user_id: int):
+    """Поиск компании по custom field telegram_user_id"""
     params = {"api_token": OKDESK_API_TOKEN}
-    custom_field_filter = f"custom_fields[telegram_user_id]={user_id}"
+    custom_filter = f"custom_fields[telegram_user_id]={user_id}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{OKDESK_API_BASE}/contacts?{custom_field_filter}", params=params) as resp:
+        async with session.get(f"{OKDESK_API_BASE}/companies?{custom_filter}", params=params) as resp:
             if resp.status != 200:
-                print(f"Ошибка API contacts: {resp.status} - {await resp.text()}")
+                print(f"Ошибка API companies: {resp.status} - {await resp.text()}")
+                return None
+            data = await resp.json()
+            companies = data.get("companies", [])
+            if not companies:
+                return None
+            return companies[0]
+
+async def get_contact_by_company(company_id: int):
+    """Найти контакт по компании (берём первый)"""
+    params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
+            if resp.status != 200:
                 return None
             data = await resp.json()
             contacts = data.get("contacts", [])
@@ -81,23 +89,25 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Пожалуйста, подождите...", reply_markup=start_kb)
 
-    contact = await get_contact_by_user_id(user_id)
+    company = await get_company_by_user_id(user_id)
 
-    if not contact:
+    if not company:
         await message.answer(
             f"Здравствуйте!\n\n"
-            f"Ваш Telegram ID ({user_id}) не найден в нашей базе клиентов.\n"
+            f"Ваш Telegram ID ({user_id}) не найден в базе компаний.\n"
             "Обратитесь к менеджеру для регистрации.",
             reply_markup=start_kb
         )
         return
 
-    fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
-    company_id = contact.get("company_id")
+    fio = "клиент"  # Если ФИО в компании нет — можно оставить так
+    # Если хочешь ФИО из контакта — добавим поиск ниже
 
-    if not company_id:
-        await message.answer(f"Здравствуйте, {fio}!\nКарточка не привязана к компании.", reply_markup=start_kb)
-        return
+    contact = await get_contact_by_company(company.get("id"))
+    if contact:
+        fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
+
+    company_id = company.get("id")
 
     objects = await get_objects_by_company(company_id)
 
@@ -118,7 +128,7 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=start_kb
     )
 
-    await state.update_data(contact=contact, objects=objects)
+    await state.update_data(company=company, objects=objects)
     await state.set_state(Form.select_object)
 
 @dp.message(Form.select_object)
@@ -147,17 +157,17 @@ async def process_problem(message: Message, state: FSMContext):
     problem = message.text.strip()
     data = await state.get_data()
 
-    fio = data.get("contact", {}).get("first_name", "клиент")
+    fio = "клиент"  # или из контакта, если нужно
     obj_name = data.get("selected_object", {}).get("name", "не выбран")
 
     summary = (
-        f"Спасибо, {fio}! Ожидайте звонок.\n\n"
+        f"Спасибо! Ожидайте звонок.\n\n"
         f"Объект: {obj_name}\n"
         f"Проблема: {problem}"
     )
     await message.answer(summary, reply_markup=start_kb)
 
-    # Отправка заявки в OKDesk (можно добавить блок из предыдущих версий)
+    # Отправка заявки в OKDesk (можно добавить)
 
     await state.clear()
 
