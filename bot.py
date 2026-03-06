@@ -40,7 +40,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
     select_object = State()   # Выбор объекта обслуживания
-    problem = State()         # Описание проблемы (можно добавить больше шагов)
+    problem = State()         # Описание проблемы
 
 # Кнопка СТАРТ — всегда видна
 start_kb = ReplyKeyboardMarkup(
@@ -55,7 +55,7 @@ async def get_contact_by_username(username: str):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             if resp.status != 200:
-                print(f"Ошибка API contacts: {resp.status}")
+                print(f"Ошибка API contacts: {resp.status} - {await resp.text()}")
                 return None
             data = await resp.json()
             contacts = data.get("contacts", [])
@@ -78,7 +78,8 @@ async def get_objects_by_company(company_id: int):
 @dp.message(lambda message: message.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
     username = message.from_user.username
-    print(f"Получен СТАРТ от @{username} ({message.from_user.id})")
+    user_id = message.from_user.id
+    print(f"Получен СТАРТ от @{username} (ID: {user_id})")
 
     await state.clear()
     await message.answer("Пожалуйста, подождите...", reply_markup=start_kb)
@@ -123,7 +124,7 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         return
 
-    # Формируем красивый список объектов
+    # Красивый список объектов
     object_list = "\n".join(
         f"{i+1}. {obj.get('name', 'Без названия')} (№ {obj.get('serial_number', 'не указан')})"
         for i, obj in enumerate(objects)
@@ -177,8 +178,34 @@ async def process_problem(message: Message, state: FSMContext):
     )
     await message.answer(summary, reply_markup=start_kb)
 
-    # Отправка заявки в OKDesk (если нужно)
-    # ... (добавь блок отправки, как в предыдущих версиях)
+    # Отправка заявки в OKDesk
+    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
+        issue_data = {
+            "issue": {
+                "title": f"Заявка из Telegram: {fio}",
+                "description": summary,
+                "priority": "normal",
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
+                    json=issue_data
+                ) as resp:
+                    if resp.status in (200, 201):
+                        print("Заявка создана успешно!")
+                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
+                    else:
+                        text = await resp.text()
+                        print(f"Ошибка OKDesk: {resp.status} - {text}")
+                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
+        except Exception as e:
+            print(f"Ошибка отправки: {e}")
+            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
+    else:
+        await message.answer("OKDesk не настроен — данные получены.")
 
     await state.clear()
 
