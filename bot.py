@@ -38,62 +38,66 @@ dp = Dispatcher(storage=storage)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# Разрешённые серийные номера (замени на свои реальные)
-ALLOWED_SERIAL_NUMBERS = ["1111111", "2222222"]  # ← ВСТАВЬ СВОИ 2 НОМЕРА
-
 class Form(StatesGroup):
-    phone = State()           # Новый: телефон в начале
-    serial_number = State()   # Новый: серийный номер
+    phone = State()           # Телефон в начале
+    serial_number = State()   # Серийный номер
     full_name = State()
     city = State()
     company = State()
     problem = State()
 
-async def check_client_and_robot(phone: str, serial_number: str):
-    """Проверка по API OKDesk: клиент + его робот + срок 2 месяцев"""
-    headers = {"Content-Type": "application/json"}
-    params = {"api_token": OKDESK_API_TOKEN}
-
-    # Шаг 1: найти контакт по телефону
+async def get_company_id_by_phone(phone: str):
+    """Найти company_id по телефону контакта"""
+    params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{OKDESK_API_BASE}/contacts", params={**params, "phone": phone}) as resp:
+        async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             if resp.status != 200:
-                return False, "Ошибка поиска клиента по телефону"
-            contacts = await resp.json()
-            if not contacts.get("contacts"):
-                return False, "Клиент с таким телефоном не найден"
+                return None
+            data = await resp.json()
+            contacts = data.get("contacts", [])
+            if not contacts:
+                return None
+            return contacts[0].get("company_id")
 
-            contact = contacts["contacts"][0]  # берём первого
-            company_id = contact.get("company_id")
-            contact_id = contact.get("id")
-
-        # Шаг 2: найти объект обслуживания по серийному номеру и компании
-        async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params={**params, "serial_number": serial_number, "company_id": company_id}) as resp:
+async def get_robot_by_serial(company_id: int, serial_number: str):
+    """Найти объект обслуживания по серийному номеру и компании"""
+    params = {"api_token": OKDESK_API_TOKEN, "serial_number": serial_number, "company_id": company_id}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
             if resp.status != 200:
-                return False, "Ошибка поиска оборудования"
-            entities = await resp.json()
-            if not entities.get("maintenance_entities"):
-                return False, "Робот с таким серийным номером не найден у этого клиента"
+                return None
+            data = await resp.json()
+            entities = data.get("maintenance_entities", [])
+            if not entities:
+                return None
+            return entities[0]  # возвращаем первый найденный объект
 
-            entity = entities["maintenance_entities"][0]
-            entity_id = entity.get("id")
-            start_date_str = entity.get("custom_fields", {}).get("free_service_start_date")
+async def check_client_and_robot(phone: str, serial_number: str):
+    """Полная проверка: клиент + робот + срок 2 месяцев"""
+    company_id = await get_company_id_by_phone(phone)
+    if not company_id:
+        return False, "Клиент с таким телефоном не найден", None
 
-            if not start_date_str:
-                return False, "У робота не указана дата начала бесплатного обслуживания"
+    robot = await get_robot_by_serial(company_id, serial_number)
+    if not robot:
+        return False, "Робот с таким серийным номером не найден у этого клиента", None
 
-            # Шаг 3: проверка 2 месяцев
-            try:
-                start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
-                two_months_later = start_date + timedelta(days=60)
-                if datetime.now() > two_months_later:
-                    return True, "Платное обслуживание (прошло более 2 месяцев)", entity_id
-                else:
-                    return True, "Бесплатное обслуживание", entity_id
-            except:
-                return False, "Неверный формат даты в поле free_service_start_date"
+    entity_id = robot.get("id")
+    custom_fields = robot.get("custom_fields", {})
+    start_date_str = custom_fields.get("free_service_start_date")
 
-        return False, "Неизвестная ошибка проверки"
+    if not start_date_str:
+        return False, "У робота не указана дата начала бесплатного обслуживания", entity_id
+
+    try:
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+        two_months_later = start_date + timedelta(days=60)
+        if datetime.now() > two_months_later:
+            return True, "Платное обслуживание (прошло более 2 месяцев)", entity_id
+        else:
+            return True, "Бесплатное обслуживание", entity_id
+    except Exception as e:
+        return False, f"Неверный формат даты в поле free_service_start_date: {e}", entity_id
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -114,6 +118,7 @@ async def process_phone(message: Message, state: FSMContext):
 async def process_serial_number(message: Message, state: FSMContext):
     serial = message.text.strip()
     print(f"Получен серийный номер: {serial}")
+
     data = await state.get_data()
     phone = data.get("phone")
 
@@ -124,17 +129,15 @@ async def process_serial_number(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    await state.update_data(entity_id=entity_id)
+
     if "платное" in msg.lower():
         await message.answer(f"{msg}. Стоимость заявки — 5000 ₽. Продолжить? (Да/Нет)")
-        await state.update_data(is_paid=True, entity_id=entity_id)
+        await state.update_data(is_paid=True, paid_confirmed=False)
     else:
-        await state.update_data(is_paid=False, entity_id=entity_id)
+        await state.update_data(is_paid=False)
         await message.answer("Бесплатное обслуживание активно. Укажите ФИО:")
         await state.set_state(Form.full_name)
-        return
-
-    # Если платное — ждём ответа Да/Нет
-    await state.update_data(wait_paid_confirm=True)
 
 @dp.message(Form.full_name)
 async def process_full_name(message: Message, state: FSMContext):
@@ -143,15 +146,56 @@ async def process_full_name(message: Message, state: FSMContext):
     await message.answer("Город:")
     await state.set_state(Form.city)
 
-# ... остальные handlers без изменений (city → company → problem → отправка в OKDesk)
+# (остальные handlers без изменений — city, company, problem)
 
-# В конце process_problem перед отправкой:
-# async def process_problem(...):
-#     data = await state.get_data()
-#     if data.get("is_paid") and not data.get("paid_confirmed"):
-#         await message.answer("Подтвердите платную заявку (Да/Нет)")
-#         return
-#     # дальше отправка в OKDesk с entity_id и тегом "Платное обслуживание" если нужно
+@dp.message(Form.problem)
+async def process_problem(message: Message, state: FSMContext):
+    print(f"Получено описание проблемы: {message.text}")
+    await state.update_data(problem=message.text.strip())
+    data = await state.get_data()
+
+    summary = (
+        "Спасибо, ожидайте звонок!\n\n"
+        f"Ваши данные:\n"
+        f"ФИО: {data.get('full_name')}\n"
+        f"Телефон: {data.get('phone')}\n"
+        f"Серийный номер: {data.get('serial_number')}\n"
+        f"Город: {data.get('city')}\n"
+        f"Компания/ИП: {data.get('company')}\n"
+        f"Проблема: {data.get('problem')}"
+    )
+    await message.answer(summary)
+
+    # Отправка в OKDesk
+    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
+        issue_data = {
+            "issue": {
+                "title": f"Заявка из Telegram: {data.get('full_name', 'Клиент')}",
+                "description": summary,
+                "priority": "normal",
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
+                    json=issue_data
+                ) as resp:
+                    if resp.status in (200, 201):
+                        print("Заявка создана успешно!")
+                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
+                    else:
+                        text = await resp.text()
+                        print(f"Ошибка OKDesk: {resp.status} - {text}")
+                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
+        except Exception as e:
+            print(f"Ошибка отправки: {e}")
+            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
+    else:
+        await message.answer("OKDesk не настроен — данные получены.")
+
+    await state.clear()
 
 async def main():
     print("Бот запущен! Используем polling.")
