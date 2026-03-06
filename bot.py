@@ -41,27 +41,13 @@ start_kb = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-async def get_company_by_user_id(user_id: int):
-    """Поиск компании по custom field telegram_user_id"""
+async def get_contact_by_user_id(user_id: int):
     params = {"api_token": OKDESK_API_TOKEN}
     custom_filter = f"custom_fields[telegram_user_id]={user_id}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{OKDESK_API_BASE}/companies?{custom_filter}", params=params) as resp:
+        async with session.get(f"{OKDESK_API_BASE}/contacts?{custom_filter}", params=params) as resp:
             if resp.status != 200:
-                print(f"Ошибка API companies: {resp.status} - {await resp.text()}")
-                return None
-            data = await resp.json()
-            companies = data.get("companies", [])
-            if not companies:
-                return None
-            return companies[0]
-
-async def get_contact_by_company(company_id: int):
-    """Найти контакт по компании (берём первый)"""
-    params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
-            if resp.status != 200:
+                print(f"Ошибка API: {resp.status} - {await resp.text()}")
                 return None
             data = await resp.json()
             contacts = data.get("contacts", [])
@@ -89,25 +75,23 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Пожалуйста, подождите...", reply_markup=start_kb)
 
-    company = await get_company_by_user_id(user_id)
+    contact = await get_contact_by_user_id(user_id)
 
-    if not company:
+    if not contact:
         await message.answer(
             f"Здравствуйте!\n\n"
-            f"Ваш Telegram ID ({user_id}) не найден в базе компаний.\n"
+            f"Ваш Telegram ID ({user_id}) не найден в базе клиентов.\n"
             "Обратитесь к менеджеру для регистрации.",
             reply_markup=start_kb
         )
         return
 
-    fio = "клиент"  # Если ФИО в компании нет — можно оставить так
-    # Если хочешь ФИО из контакта — добавим поиск ниже
+    fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
+    company_id = contact.get("company_id")
 
-    contact = await get_contact_by_company(company.get("id"))
-    if contact:
-        fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
-
-    company_id = company.get("id")
+    if not company_id:
+        await message.answer(f"Здравствуйте, {fio}!\nКарточка не привязана к компании.", reply_markup=start_kb)
+        return
 
     objects = await get_objects_by_company(company_id)
 
@@ -128,7 +112,7 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=start_kb
     )
 
-    await state.update_data(company=company, objects=objects)
+    await state.update_data(contact=contact, objects=objects)
     await state.set_state(Form.select_object)
 
 @dp.message(Form.select_object)
@@ -142,7 +126,7 @@ async def process_object_selection(message: Message, state: FSMContext):
             selected = objects[num]
             await state.update_data(selected_object=selected)
             await message.answer(
-                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')})\n\n"
+                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')}) \n\n"
                 "Опишите проблему:"
             )
             await state.set_state(Form.problem)
@@ -157,18 +141,17 @@ async def process_problem(message: Message, state: FSMContext):
     problem = message.text.strip()
     data = await state.get_data()
 
-    fio = "клиент"  # или из контакта, если нужно
+    fio = data.get("contact", {}).get("first_name", "клиент")
     obj_name = data.get("selected_object", {}).get("name", "не выбран")
 
     summary = (
-        f"Спасибо! Ожидайте звонок.\n\n"
+        f"Спасибо, {fio}! Ожидайте звонок.\n\n"
         f"Объект: {obj_name}\n"
         f"Проблема: {problem}"
     )
     await message.answer(summary, reply_markup=start_kb)
 
-    # Отправка заявки в OKDesk (можно добавить)
-
+    # Отправка заявки в OKDesk (добавь, если нужно)
     await state.clear()
 
 async def main():
