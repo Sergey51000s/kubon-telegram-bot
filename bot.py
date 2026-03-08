@@ -43,10 +43,10 @@ start_kb = ReplyKeyboardMarkup(
 )
 
 async def get_contact_by_chat_id(chat_id: int):
-    """Поиск по search_string (ищет по всем полям, включая custom)"""
+    """Поиск по search_string — ищет по всем полям карточки"""
     params = {
         "api_token": OKDESK_API_TOKEN,
-        "search_string": str(chat_id)  # ← поиск по строке 566752574
+        "search_string": str(chat_id)  # ← твой ID как строка
     }
     async with aiohttp.ClientSession() as session:
         logging.info(f"Запрос на поиск по search_string: {chat_id}")
@@ -143,7 +143,7 @@ async def process_object_selection(message: Message, state: FSMContext):
             )
             await state.set_state(Form.problem)
             return
-    except:
+    except ValueError:
         pass
 
     await message.answer("Введите номер из списка (1, 2, 3...)")
