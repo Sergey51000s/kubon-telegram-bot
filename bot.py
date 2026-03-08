@@ -17,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "8b3e885f3f7054fa32fcd8520b7fa1e31c1a7ae3"  # Твой новый API-ключ
+OKDESK_API_TOKEN = "8b3e885f3f7054fa32fcd8520b7fa1e31c1a7ae3"  # Новый ключ
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2026"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -43,12 +43,14 @@ start_kb = ReplyKeyboardMarkup(
 )
 
 async def get_contact_by_chat_id(chat_id: int):
-    """Поиск контакта по custom field telegram_chat_id"""
-    params = {"api_token": OKDESK_API_TOKEN}
-    custom_filter = f"custom_fields[telegram_chat_id]={chat_id}"
+    """Поиск по search_string (ищет по всем полям, включая custom)"""
+    params = {
+        "api_token": OKDESK_API_TOKEN,
+        "search_string": str(chat_id)  # ← поиск по строке 566752574
+    }
     async with aiohttp.ClientSession() as session:
-        logging.info(f"Запрос на поиск по telegram_chat_id: {chat_id}")
-        async with session.get(f"{OKDESK_API_BASE}/contacts?{custom_filter}", params=params) as resp:
+        logging.info(f"Запрос на поиск по search_string: {chat_id}")
+        async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             logging.info(f"Статус ответа: {resp.status}")
             if resp.status != 200:
                 text = await resp.text()
@@ -160,35 +162,6 @@ async def process_problem(message: Message, state: FSMContext):
         f"Проблема: {problem}"
     )
     await message.answer(summary, reply_markup=start_kb)
-
-    # Отправка заявки в OKDesk
-    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
-        issue_data = {
-            "issue": {
-                "title": f"Заявка из Telegram: {fio}",
-                "description": summary,
-                "priority": "normal",
-            }
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
-                    json=issue_data
-                ) as resp:
-                    if resp.status in (200, 201):
-                        logging.info("Заявка создана успешно!")
-                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
-                    else:
-                        text = await resp.text()
-                        logging.error(f"Ошибка OKDesk: {resp.status} - {text}")
-                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
-    else:
-        await message.answer("OKDesk не настроен — данные получены.")
 
     await state.clear()
 
