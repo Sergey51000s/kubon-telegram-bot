@@ -9,19 +9,16 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 import aiohttp
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN")
-OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN")
-
-if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
-    print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
-    sys.exit(1)
+# === Настройки ===
+TELEGRAM_TOKEN = "8773186067:AAFEtMtaKtkTTGH6HLNmWEzdXHlFKYh4g3g"  # Токен менеджера
+OKDESK_API_TOKEN = "8b3e885f3f7054fa32fcd8520b7fa1e31c1a7ae3"     # ← Новый API-ключ
+OKDESK_SUBDOMAIN = "teken2026"
 
 OKDESK_API_BASE = f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1"
 
@@ -31,139 +28,126 @@ dp = Dispatcher(storage=storage)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-class Form(StatesGroup):
-    select_object = State()
-    problem = State()
-
-start_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="СТАРТ")]],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
-
-async def get_contact_by_user_id(user_id: int):
-    params = {"api_token": OKDESK_API_TOKEN, "custom_fields[telegram_user_id]": str(user_id)}
-    async with aiohttp.ClientSession() as session:
-        logging.info(f"Отправка запроса на поиск контакта по telegram_user_id: {user_id}")
-        async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
-            logging.info(f"Ответ от API /contacts: статус {resp.status}")
-            if resp.status != 200:
-                text = await resp.text()
-                logging.error(f"Ошибка: {text}")
-                return None
-            data = await resp.json()
-            contacts = data.get("contacts", [])
-            logging.info(f"Найдено контактов: {len(contacts)}")
-            if not contacts:
-                return None
-            return contacts[0]
-
-async def get_objects_by_company(company_id: int):
-    params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
-    async with aiohttp.ClientSession() as session:
-        logging.info(f"Отправка запроса на объекты компании {company_id}")
-        async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
-            logging.info(f"Ответ от API /maintenance_entities: статус {resp.status}")
-            if resp.status != 200:
-                text = await resp.text()
-                logging.error(f"Ошибка: {text}")
-                return []
-            data = await resp.json()
-            objects = data.get("maintenance_entities", [])
-            logging.info(f"Найдено объектов: {len(objects)}")
-            return objects
+class ManagerForm(StatesGroup):
+    fio = State()
+    phone = State()
+    telegram_username = State()
+    telegram_user_id = State()
+    robot_name = State()
+    serial_number = State()
+    start_date = State()
 
 @dp.message(CommandStart())
-@dp.message(lambda message: message.text == "СТАРТ")
-async def cmd_start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    username = message.from_user.username or "без username"
-    logging.info(f"СТАРТ от @{username} (ID: {user_id})")
-
+async def manager_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Пожалуйста, подождите...", reply_markup=start_kb)
+    await message.answer("Здравствуйте, менеджер! Укажите ФИО клиента:")
+    await state.set_state(ManagerForm.fio)
 
-    contact = await get_contact_by_user_id(user_id)
+@dp.message(ManagerForm.fio)
+async def process_fio(message: Message, state: FSMContext):
+    await state.update_data(fio=message.text.strip())
+    await message.answer("Телефон клиента (+7...):")
+    await state.set_state(ManagerForm.phone)
 
-    if not contact:
-        await message.answer(
-            f"Здравствуйте!\n\n"
-            f"Ваш Telegram ID ({user_id}) не найден в базе клиентов.\n"
-            "Обратитесь к менеджеру для регистрации.",
-            reply_markup=start_kb
-        )
-        return
+@dp.message(ManagerForm.phone)
+async def process_phone(message: Message, state: FSMContext):
+    await state.update_data(phone=message.text.strip())
+    await message.answer("Telegram username клиента (без @):")
+    await state.set_state(ManagerForm.telegram_username)
 
-    fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
-    company_id = contact.get("company_id")
+@dp.message(ManagerForm.telegram_username)
+async def process_username(message: Message, state: FSMContext):
+    await state.update_data(telegram_username=message.text.strip())
+    await message.answer("Telegram User ID клиента (число):")
+    await state.set_state(ManagerForm.telegram_user_id)
 
-    if not company_id:
-        await message.answer(f"Здравствуйте, {fio}!\nКарточка не привязана к компании.", reply_markup=start_kb)
-        return
-
-    objects = await get_objects_by_company(company_id)
-
-    if not objects:
-        await message.answer(f"Здравствуйте, {fio}!\nУ вас нет объектов обслуживания.", reply_markup=start_kb)
-        return
-
-    object_list = "\n".join(
-        f"{i+1}. {obj.get('name', 'Без названия')} (№ {obj.get('serial_number', 'не указан')})"
-        for i, obj in enumerate(objects)
-    )
-
-    await message.answer(
-        f"Здравствуйте, {fio}!\n\n"
-        f"Выберите объект с проблемой:\n\n"
-        f"{object_list}\n\n"
-        "Напишите номер (1, 2, 3...)",
-        reply_markup=start_kb
-    )
-
-    await state.update_data(contact=contact, objects=objects)
-    await state.set_state(Form.select_object)
-
-@dp.message(Form.select_object)
-async def process_object_selection(message: Message, state: FSMContext):
-    text = message.text.strip()
+@dp.message(ManagerForm.telegram_user_id)
+async def process_user_id(message: Message, state: FSMContext):
     try:
-        num = int(text) - 1
-        data = await state.get_data()
-        objects = data.get("objects", [])
-        if 0 <= num < len(objects):
-            selected = objects[num]
-            await state.update_data(selected_object=selected)
-            await message.answer(
-                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')})\n\n"
-                "Опишите проблему:"
-            )
-            await state.set_state(Form.problem)
-            return
-    except:
-        pass
+        user_id = int(message.text.strip())
+        await state.update_data(telegram_user_id=user_id)
+        await message.answer("Название робота (например Робот №1):")
+        await state.set_state(ManagerForm.robot_name)
+    except ValueError:
+        await message.answer("Введите число (User ID).")
 
-    await message.answer("Введите номер из списка (1, 2, 3...)")
+@dp.message(ManagerForm.robot_name)
+async def process_robot_name(message: Message, state: FSMContext):
+    await state.update_data(robot_name=message.text.strip())
+    await message.answer("Серийный номер робота:")
+    await state.set_state(ManagerForm.serial_number)
 
-@dp.message(Form.problem)
-async def process_problem(message: Message, state: FSMContext):
-    problem = message.text.strip()
+@dp.message(ManagerForm.serial_number)
+async def process_serial_number(message: Message, state: FSMContext):
+    await state.update_data(serial_number=message.text.strip())
+    await message.answer("Дата начала бесплатного обслуживания (YYYY-MM-DD):")
+    await state.set_state(ManagerForm.start_date)
+
+@dp.message(ManagerForm.start_date)
+async def process_start_date(message: Message, state: FSMContext):
     data = await state.get_data()
+    start_date = message.text.strip()
 
-    fio = data.get("contact", {}).get("first_name", "клиент")
-    obj_name = data.get("selected_object", {}).get("name", "не выбран")
+    # Создание контакта
+    contact_data = {
+        "contact": {
+            "first_name": data['fio'].split()[0],
+            "last_name": ' '.join(data['fio'].split()[1:]) if len(data['fio'].split()) > 1 else "",
+            "phone": data['phone'],
+            "telegram_username": data['telegram_username'],
+            "custom_fields": {
+                "telegram_user_id": data['telegram_user_id']
+            }
+        }
+    }
 
-    summary = (
-        f"Спасибо, {fio}! Ожидайте звонок.\n\n"
-        f"Объект: {obj_name}\n"
-        f"Проблема: {problem}"
-    )
-    await message.answer(summary, reply_markup=start_kb)
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{OKDESK_API_BASE}/contacts",
+            json=contact_data,
+            params={"api_token": OKDESK_API_TOKEN}
+        ) as resp:
+            logging.info(f"Создание контакта: статус {resp.status}")
+            if resp.status not in (200, 201):
+                text = await resp.text()
+                logging.error(f"Ошибка создания контакта: {text}")
+                await message.answer(f"Ошибка создания контакта: {resp.status} - {text}")
+                await state.clear()
+                return
+            contact_response = await resp.json()
+            contact_id = contact_response.get("id")
+            logging.info(f"Создан контакт ID: {contact_id}")
 
-    # Отправка заявки (можно добавить)
+    # Создание объекта обслуживания
+    entity_data = {
+        "maintenance_entity": {
+            "name": data['robot_name'],
+            "serial_number": data['serial_number'],
+            "custom_fields": {
+                "free_service_start_date": start_date
+            },
+            "contact_id": contact_id
+        }
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{OKDESK_API_BASE}/maintenance_entities",
+            json=entity_data,
+            params={"api_token": OKDESK_API_TOKEN}
+        ) as resp:
+            logging.info(f"Создание объекта: статус {resp.status}")
+            if resp.status not in (200, 201):
+                text = await resp.text()
+                logging.error(f"Ошибка создания объекта: {text}")
+                await message.answer(f"Ошибка создания робота: {resp.status} - {text}")
+            else:
+                await message.answer("Клиент и робот успешно зарегистрированы в OKDesk!")
+
     await state.clear()
 
 async def main():
-    print("Бот запущен! Используем polling.")
+    print("Менеджерский бот запущен! Используем polling.")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
