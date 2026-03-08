@@ -17,8 +17,8 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "8b3e885f3f7054fa32fcd8520b7fa1e31c1a7ae3"  # Новый ключ
-OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2026"
+OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"  # Твой текущий ключ
+OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -44,21 +44,29 @@ start_kb = ReplyKeyboardMarkup(
 )
 
 async def get_contact_by_phone(phone: str):
-    """Поиск по телефону — стандартное поле, точно работает"""
+    """Поиск по телефону — стандартное поле"""
     params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
         logging.info(f"Запрос по телефону: {phone}")
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             logging.info(f"Статус: {resp.status}")
+            text = await resp.text()
+            logging.info(f"Сырой ответ API: {text}")
+
             if resp.status != 200:
-                logging.error(await resp.text())
+                await message.answer(f"Ошибка API: статус {resp.status}. Ответ: {text}", reply_markup=start_kb)
                 return None
-            data = await resp.json()
-            contacts = data.get("contacts", [])
-            logging.info(f"Найдено контактов: {len(contacts)}")
-            if not contacts:
+
+            try:
+                data = await resp.json()
+                contacts = data.get("contacts", [])
+                logging.info(f"Найдено контактов: {len(contacts)}")
+                if not contacts:
+                    return None
+                return contacts[0]
+            except Exception as e:
+                logging.error(f"Ошибка парсинга JSON: {e}")
                 return None
-            return contacts[0]
 
 async def get_objects_by_company(company_id: int):
     params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
@@ -161,35 +169,6 @@ async def process_problem(message: Message, state: FSMContext):
         f"Проблема: {problem}"
     )
     await message.answer(summary, reply_markup=start_kb)
-
-    # Отправка заявки в OKDesk
-    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
-        issue_data = {
-            "issue": {
-                "title": f"Заявка из Telegram: {fio}",
-                "description": summary,
-                "priority": "normal",
-            }
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
-                    json=issue_data
-                ) as resp:
-                    if resp.status in (200, 201):
-                        logging.info("Заявка создана успешно!")
-                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
-                    else:
-                        text = await resp.text()
-                        logging.error(f"Ошибка OKDesk: {resp.status} - {text}")
-                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
-    else:
-        await message.answer("OKDesk не настроен — данные получены.")
 
     await state.clear()
 
