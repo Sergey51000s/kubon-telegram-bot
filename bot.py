@@ -33,6 +33,7 @@ dp = Dispatcher(storage=storage)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
+    phone = State()
     select_object = State()
     problem = State()
 
@@ -42,19 +43,15 @@ start_kb = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-async def get_contact_by_chat_id(chat_id: int):
-    """Поиск по search_string — ищет по всем полям карточки"""
-    params = {
-        "api_token": OKDESK_API_TOKEN,
-        "search_string": str(chat_id)  # ← твой ID как строка
-    }
+async def get_contact_by_phone(phone: str):
+    """Поиск по телефону — стандартное поле, точно работает"""
+    params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
-        logging.info(f"Запрос на поиск по search_string: {chat_id}")
+        logging.info(f"Запрос по телефону: {phone}")
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
-            logging.info(f"Статус ответа: {resp.status}")
+            logging.info(f"Статус: {resp.status}")
             if resp.status != 200:
-                text = await resp.text()
-                logging.error(f"Ошибка API: {text}")
+                logging.error(await resp.text())
                 return None
             data = await resp.json()
             contacts = data.get("contacts", [])
@@ -80,22 +77,22 @@ async def get_objects_by_company(company_id: int):
 @dp.message(CommandStart())
 @dp.message(lambda message: message.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    username = message.from_user.username or "без username"
-    logging.info(f"СТАРТ от @{username} (ID: {user_id})")
-
+    logging.info(f"СТАРТ от {message.from_user.id}")
     await state.clear()
-    await message.answer("Пожалуйста, подождите...", reply_markup=start_kb)
+    await message.answer("Здравствуйте! Укажите ваш номер телефона (+7...):", reply_markup=start_kb)
+    await state.set_state(Form.phone)
 
-    contact = await get_contact_by_chat_id(user_id)
+@dp.message(Form.phone)
+async def process_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    logging.info(f"Телефон введён: {phone}")
+    await state.update_data(phone=phone)
+
+    contact = await get_contact_by_phone(phone)
 
     if not contact:
-        await message.answer(
-            f"Здравствуйте!\n\n"
-            f"Ваш Telegram ID ({user_id}) не найден в базе клиентов.\n"
-            "Обратитесь к менеджеру для регистрации.",
-            reply_markup=start_kb
-        )
+        await message.answer("Клиент с таким телефоном не найден. Обратитесь к менеджеру.", reply_markup=start_kb)
+        await state.clear()
         return
 
     fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
@@ -103,12 +100,14 @@ async def cmd_start(message: Message, state: FSMContext):
 
     if not company_id:
         await message.answer(f"Здравствуйте, {fio}!\nКарточка не привязана к компании.", reply_markup=start_kb)
+        await state.clear()
         return
 
     objects = await get_objects_by_company(company_id)
 
     if not objects:
         await message.answer(f"Здравствуйте, {fio}!\nУ вас нет объектов обслуживания.", reply_markup=start_kb)
+        await state.clear()
         return
 
     object_list = "\n".join(
