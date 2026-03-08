@@ -17,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"  # Твой текущий ключ
+OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -44,7 +44,6 @@ start_kb = ReplyKeyboardMarkup(
 )
 
 async def get_contact_by_phone(phone: str):
-    """Поиск по телефону — стандартное поле"""
     params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
         logging.info(f"Запрос по телефону: {phone}")
@@ -54,16 +53,19 @@ async def get_contact_by_phone(phone: str):
             logging.info(f"Сырой ответ API: {text}")
 
             if resp.status != 200:
-                await message.answer(f"Ошибка API: статус {resp.status}. Ответ: {text}", reply_markup=start_kb)
                 return None
 
             try:
                 data = await resp.json()
+                # OKDesk может вернуть массив contacts или одиночный объект
                 contacts = data.get("contacts", [])
-                logging.info(f"Найдено контактов: {len(contacts)}")
+                if not contacts and isinstance(data, dict) and "id" in data:
+                    contacts = [data]  # ← если одиночный объект — делаем массив из него
+
+                logging.info(f"Найдено контактов после фикса: {len(contacts)}")
                 if not contacts:
                     return None
-                return contacts[0]
+                return contacts[0]  # берём первый найденный
             except Exception as e:
                 logging.error(f"Ошибка парсинга JSON: {e}")
                 return None
@@ -175,6 +177,9 @@ async def process_problem(message: Message, state: FSMContext):
 async def main():
     print("Бот запущен! Используем polling.")
     await dp.start_polling(bot, drop_pending_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
