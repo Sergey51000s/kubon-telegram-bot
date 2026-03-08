@@ -57,15 +57,21 @@ async def get_contact_by_phone(phone: str):
 
             try:
                 data = await resp.json()
-                # OKDesk может вернуть массив contacts или одиночный объект
+
+                # Вариант 1: массив contacts
                 contacts = data.get("contacts", [])
+
+                # Вариант 2: одиночный объект (если нет ключа contacts)
                 if not contacts and isinstance(data, dict) and "id" in data:
-                    contacts = [data]  # ← если одиночный объект — делаем массив из него
+                    contacts = [data]
 
                 logging.info(f"Найдено контактов после фикса: {len(contacts)}")
+
                 if not contacts:
                     return None
-                return contacts[0]  # берём первый найденный
+
+                return contacts[0]  # берём первый контакт
+
             except Exception as e:
                 logging.error(f"Ошибка парсинга JSON: {e}")
                 return None
@@ -177,9 +183,6 @@ async def process_problem(message: Message, state: FSMContext):
 async def main():
     print("Бот запущен! Используем polling.")
     await dp.start_polling(bot, drop_pending_updates=True)
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
