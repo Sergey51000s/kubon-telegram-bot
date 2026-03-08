@@ -163,6 +163,35 @@ async def process_problem(message: Message, state: FSMContext):
     )
     await message.answer(summary, reply_markup=start_kb)
 
+    # Отправка заявки в OKDesk
+    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
+        issue_data = {
+            "issue": {
+                "title": f"Заявка из Telegram: {fio}",
+                "description": summary,
+                "priority": "normal",
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
+                    json=issue_data
+                ) as resp:
+                    if resp.status in (200, 201):
+                        logging.info("Заявка создана успешно!")
+                        await message.answer("Заявка успешно отправлена в систему OKDesk!")
+                    else:
+                        text = await resp.text()
+                        logging.error(f"Ошибка OKDesk: {resp.status} - {text}")
+                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
+            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
+    else:
+        await message.answer("OKDesk не настроен — данные получены.")
+
     await state.clear()
 
 async def main():
