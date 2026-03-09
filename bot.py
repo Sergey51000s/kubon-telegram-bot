@@ -21,10 +21,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.get
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-# Из настроек OkDesk
-ISSUE_KIND_ID = 2  # "Обслуживание" (service)
-ISSUE_PRIORITY_ID = 2  # "Обычный" (normal)
-ISSUE_CHANNEL_ID = 1  # По умолчанию
+ISSUE_KIND_ID = 2          # Обслуживание
+ISSUE_PRIORITY_ID = 2      # Обычный
+ISSUE_CHANNEL_ID = 1       # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -48,52 +47,13 @@ class Form(StatesGroup):
 
 
 # Клавиатуры
-start_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="СТАРТ")]],
-    resize_keyboard=True
-)
-
-main_menu_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Срок действия подписки")],
-        [KeyboardButton(text="Обслуживание")]
-    ],
-    resize_keyboard=True
-)
-
-back_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="Назад в меню")]],
-    resize_keyboard=True
-)
-
-another_phone_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Ввести другой номер")],
-        [KeyboardButton(text="СТАРТ")]
-    ],
-    resize_keyboard=True
-)
-
-confirm_issue_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Создать заявку")],
-        [KeyboardButton(text="Назад в меню")]
-    ],
-    resize_keyboard=True
-)
-
-attach_choice_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Да, прикрепить фото/видео")],
-        [KeyboardButton(text="Нет, создать заявку без файлов")]
-    ],
-    resize_keyboard=True
-)
-
-done_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="Готово, отправить заявку")]],
-    resize_keyboard=True
-)
+start_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="СТАРТ")]], resize_keyboard=True)
+main_menu_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Срок действия подписки")], [KeyboardButton(text="Обслуживание")]], resize_keyboard=True)
+back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
+another_phone_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Ввести другой номер")], [KeyboardButton(text="СТАРТ")]], resize_keyboard=True)
+confirm_issue_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Создать заявку")], [KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
+attach_choice_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Да, прикрепить фото/видео")], [KeyboardButton(text="Нет, создать заявку без файлов")]], resize_keyboard=True)
+done_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Готово, отправить заявку")]], resize_keyboard=True)
 
 
 def normalize_phone(raw: str) -> str:
@@ -137,7 +97,7 @@ async def search_equipment_by_serial(serial: str):
             return None
 
 
-async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int, description: str):
+async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int | None, description: str):
     payload = {
         "issue": {
             "company_id": company_id,
@@ -150,7 +110,6 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
             "channel_id": ISSUE_CHANNEL_ID,
         }
     }
-    # Удаляем None
     payload["issue"] = {k: v for k, v in payload["issue"].items() if v is not None}
 
     async with aiohttp.ClientSession() as session:
@@ -257,19 +216,29 @@ async def process_serial(message: Message, state: FSMContext):
 
     await message.answer(info, reply_markup=confirm_issue_kb)
     await state.update_data(equipment=equipment, maintenance_entity_id=maintenance_entity_id)
+    await state.set_state(Form.issue_description)
 
 
 @dp.message(Form.issue_description, F.text == "Создать заявку")
 async def start_create_issue(message: Message, state: FSMContext):
-    await message.answer("Опишите проблему кратко (можно несколько предложений):", reply_markup=back_kb)
+    await message.answer(
+        "Опишите проблему кратко (можно несколько предложений):",
+        reply_markup=back_kb
+    )
+    await state.set_state(Form.issue_description)
+
+
+@dp.message(Form.issue_description, F.text == "Назад в меню")
+async def cancel_issue(message: Message, state: FSMContext):
+    await message.answer("Главное меню:", reply_markup=main_menu_kb)
+    await state.set_state(Form.menu)
 
 
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
     desc = message.text.strip()
     if desc == "Назад в меню":
-        await message.answer("Главное меню:", reply_markup=main_menu_kb)
-        await state.set_state(Form.menu)
+        await cancel_issue(message, state)
         return
 
     await state.update_data(issue_description=desc)
