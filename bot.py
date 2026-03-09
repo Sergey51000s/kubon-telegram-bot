@@ -21,9 +21,9 @@ OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 # Значения из настроек OkDesk
-ISSUE_KIND_ID = 2  # "Обслуживание" (service)
-ISSUE_PRIORITY_ID = 2  # "Обычный" (normal)
-ISSUE_CHANNEL_ID = 1  # По умолчанию
+ISSUE_KIND_ID = 2          # "Обслуживание" (service)
+ISSUE_PRIORITY_ID = 2      # "Обычный" (normal)
+ISSUE_CHANNEL_ID = 1       # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -44,10 +44,9 @@ class Form(StatesGroup):
     issue_description = State()
     ask_attach = State()
     wait_attach = State()
-    issue_ready = State()
 
 
-# Клавиатуры
+# Клавиатуры (без изменений)
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
     resize_keyboard=True
@@ -149,24 +148,17 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
         "issue[priority_id]": str(ISSUE_PRIORITY_ID),
         "issue[channel_id]": str(ISSUE_CHANNEL_ID),
     }
-    # Удаляем None, чтобы не отправлять пустые поля
     payload = {k: v for k, v in payload.items() if v is not None}
 
     async with aiohttp.ClientSession() as session:
         logging.info(f"Создание заявки с payload: {payload}")
         async with session.post(f"{OKDESK_API_BASE}/issues", data=payload) as resp:
-            if resp.status in (200, 201, 422):
-                text = await resp.text()
-                logging.info(f"Ответ на создание заявки: {resp.status} - {text}")
-                if resp.status == 422:
-                    return None
+            text = await resp.text()
+            logging.info(f"Ответ создания заявки: {resp.status} - {text}")
+            if resp.status in (200, 201):
                 data = await resp.json()
-                issue_id = data.get("id")
-                return issue_id
-            else:
-                text = await resp.text()
-                logging.error(f"Ошибка создания заявки: {resp.status} - {text}")
-                return None
+                return data.get("id")
+            return None
 
 
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
@@ -179,13 +171,11 @@ async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
         logging.info(f"Загрузка файла к заявке {issue_id}: {filename}")
         async with session.post(url, data=form) as resp:
             text = await resp.text()
-            logging.info(f"Ответ на загрузку файла: {resp.status} - {text}")
-            if resp.status in (200, 201):
-                return True
-            else:
-                return False
+            logging.info(f"Ответ на загрузку: {resp.status} - {text}")
+            return resp.status in (200, 201)
 
 
+# Хендлеры
 @dp.message(CommandStart())
 @dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
@@ -273,16 +263,10 @@ async def cancel_issue(message: Message, state: FSMContext):
     await state.set_state(Form.menu)
 
 
-@dp.message(Form.issue_description, F.text == "Создать заявку")
-async def start_create_issue(message: Message, state: FSMContext):
-    await message.answer("Опишите проблему кратко (можно несколько предложений):", reply_markup=back_kb)
-    await state.set_state(Form.issue_description)
-
-
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
     desc = message.text.strip()
-    if F.text == "Назад в меню":
+    if desc == "Назад в меню":
         await cancel_issue(message, state)
         return
 
@@ -372,7 +356,8 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
                     if resp.status == 200:
                         content = await resp.read()
                         content_type = resp.headers.get("Content-Type", "application/octet-stream")
-                        filename = f"attach_{file_id[:8]}.{content_type.split('/')[-1]}"
+                        ext = content_type.split('/')[-1] or "bin"
+                        filename = f"attach_{uploaded + 1}.{ext}"
                         success = await upload_attachment(issue_id, content, filename)
                         if success:
                             uploaded += 1
