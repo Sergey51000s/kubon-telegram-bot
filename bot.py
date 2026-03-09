@@ -20,10 +20,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.get
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-# Значения из твоих настроек OkDesk
-ISSUE_KIND_ID = 2          # Тип заявки: "Обслуживание" (код service)
-ISSUE_PRIORITY_ID = 2      # Приоритет: "Обычный" (код normal)
-ISSUE_CHANNEL_ID = 1       # Канал по умолчанию (если не нужен — можно удалить из payload)
+# Значения из настроек OkDesk
+ISSUE_KIND_ID = 2  # "Обслуживание" (service)
+ISSUE_PRIORITY_ID = 2  # "Обычный" (normal)
+ISSUE_CHANNEL_ID = 1  # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -40,11 +40,11 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 class Form(StatesGroup):
     phone = State()
     menu = State()
-    serial_input = State()          # ввод серийного номера
-    issue_description = State()     # описание проблемы
-    ask_attach = State()            # "Желаете прикрепить фото?"
-    wait_attach = State()           # ожидание файлов
-    issue_ready = State()           # готово к отправке
+    serial_input = State()
+    issue_description = State()
+    ask_attach = State()
+    wait_attach = State()
+    issue_ready = State()
 
 
 # Клавиатуры
@@ -137,27 +137,31 @@ async def search_equipment_by_serial(serial: str):
             return None
 
 
-async def create_issue(company_id: int, equipment_id: int, description: str):
+async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int, description: str):
     payload = {
         "api_token": OKDESK_API_TOKEN,
-        "issue": {
-            "company_id": company_id,
-            "equipment_id": equipment_id,
-            "title": "Заявка из Telegram-бота",
-            "content": description or "Без описания",
-            "kind_id": ISSUE_KIND_ID,        # Тип заявки: Обслуживание
-            "priority_id": ISSUE_PRIORITY_ID,  # Приоритет: Обычный
-            "channel_id": ISSUE_CHANNEL_ID     # Канал (если требуется)
-        }
+        "issue[company_id]": str(company_id),
+        "issue[equipment_id]": str(equipment_id),
+        "issue[maintenance_entity_id]": str(maintenance_entity_id) if maintenance_entity_id else None,
+        "issue[title]": "Заявка из Telegram-бота",
+        "issue[content]": description or "Без описания",
+        "issue[kind_id]": str(ISSUE_KIND_ID),
+        "issue[priority_id]": str(ISSUE_PRIORITY_ID),
+        "issue[channel_id]": str(ISSUE_CHANNEL_ID),
     }
+    # Удаляем None, чтобы не отправлять пустые поля
+    payload = {k: v for k, v in payload.items() if v is not None}
 
     async with aiohttp.ClientSession() as session:
         logging.info(f"Создание заявки с payload: {payload}")
-        async with session.post(f"{OKDESK_API_BASE}/issues", json=payload) as resp:
-            if resp.status in (200, 201):
+        async with session.post(f"{OKDESK_API_BASE}/issues", data=payload) as resp:
+            if resp.status in (200, 201, 422):
+                text = await resp.text()
+                logging.info(f"Ответ на создание заявки: {resp.status} - {text}")
+                if resp.status == 422:
+                    return None
                 data = await resp.json()
                 issue_id = data.get("id")
-                logging.info(f"Заявка создана: {issue_id}")
                 return issue_id
             else:
                 text = await resp.text()
@@ -168,21 +172,20 @@ async def create_issue(company_id: int, equipment_id: int, description: str):
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment", file_bytes, filename=filename, content_type="application/octet-stream")
+    form.add_field("attachment[0]", file_bytes, filename=filename)
 
     async with aiohttp.ClientSession() as session:
         url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
+        logging.info(f"Загрузка файла к заявке {issue_id}: {filename}")
         async with session.post(url, data=form) as resp:
+            text = await resp.text()
+            logging.info(f"Ответ на загрузку файла: {resp.status} - {text}")
             if resp.status in (200, 201):
-                logging.info(f"Файл {filename} загружен к заявке {issue_id}")
                 return True
             else:
-                text = await resp.text()
-                logging.error(f"Ошибка загрузки файла: {resp.status} - {text}")
                 return False
 
 
-# Хендлеры
 @dp.message(CommandStart())
 @dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
@@ -248,29 +251,41 @@ async def process_serial(message: Message, state: FSMContext):
     manufacturer = equipment.get("equipment_manufacturer", {}).get("name", "")
     model = equipment.get("equipment_model", {}).get("name", "")
     serial_found = equipment.get("serial_number", "не указан")
+    maintenance_entity_id = equipment.get("maintenance_entity_id", None)
 
     info = (
         f"<b>Найдено оборудование:</b>\n"
         f"Вид: {kind}\n"
         f"Производитель: {manufacturer}\n"
         f"Модель: {model}\n"
-        f"Серийный №: {serial_found}"
+        f"Серийный №: {serial_found}\n"
+        f"Объект обслуживания ID: {maintenance_entity_id or 'Не привязан'}"
     )
 
     await message.answer(info, reply_markup=confirm_issue_kb)
-    await state.update_data(equipment=equipment)
+    await state.update_data(equipment=equipment, maintenance_entity_id=maintenance_entity_id)
     await state.set_state(Form.issue_description)
+
+
+@dp.message(Form.issue_description, F.text == "Назад в меню")
+async def cancel_issue(message: Message, state: FSMContext):
+    await message.answer("Главное меню:", reply_markup=main_menu_kb)
+    await state.set_state(Form.menu)
 
 
 @dp.message(Form.issue_description, F.text == "Создать заявку")
 async def start_create_issue(message: Message, state: FSMContext):
-    await message.answer("Опишите проблему кратко (можно несколько предложений):")
+    await message.answer("Опишите проблему кратко (можно несколько предложений):", reply_markup=back_kb)
     await state.set_state(Form.issue_description)
 
 
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
     desc = message.text.strip()
+    if F.text == "Назад в меню":
+        await cancel_issue(message, state)
+        return
+
     await state.update_data(issue_description=desc)
 
     await message.answer(
@@ -327,6 +342,7 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
     contact = data.get("contact", {})
     equipment = data.get("equipment", {})
     description = data.get("issue_description", "Без описания")
+    maintenance_entity_id = data.get("maintenance_entity_id", None)
 
     company_id = contact.get("company_id")
     equipment_id = equipment.get("id")
@@ -336,7 +352,7 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
         await state.set_state(Form.menu)
         return
 
-    issue_id = await create_issue(company_id, equipment_id, description)
+    issue_id = await create_issue(company_id, equipment_id, maintenance_entity_id, description)
 
     if not issue_id:
         await message.answer("Не удалось создать заявку. Обратитесь к менеджеру.", reply_markup=main_menu_kb)
@@ -355,8 +371,8 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
                 async with session.get(file_url) as resp:
                     if resp.status == 200:
                         content = await resp.read()
-                        ext = "jpg" if message.photo else "mp4" if message.video else "pdf"
-                        filename = f"attach_{uploaded + 1}.{ext}"
+                        content_type = resp.headers.get("Content-Type", "application/octet-stream")
+                        filename = f"attach_{file_id[:8]}.{content_type.split('/')[-1]}"
                         success = await upload_attachment(issue_id, content, filename)
                         if success:
                             uploaded += 1
