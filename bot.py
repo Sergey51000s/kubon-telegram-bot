@@ -58,10 +58,8 @@ async def get_contact_by_phone(phone: str):
             try:
                 data = await resp.json()
 
-                # Вариант 1: массив contacts
+                # OKDesk может вернуть массив contacts или одиночный объект
                 contacts = data.get("contacts", [])
-
-                # Вариант 2: одиночный объект (если нет ключа contacts)
                 if not contacts and isinstance(data, dict) and "id" in data:
                     contacts = [data]
 
@@ -70,8 +68,7 @@ async def get_contact_by_phone(phone: str):
                 if not contacts:
                     return None
 
-                return contacts[0]  # берём первый контакт
-
+                return contacts[0]
             except Exception as e:
                 logging.error(f"Ошибка парсинга JSON: {e}")
                 return None
@@ -82,13 +79,27 @@ async def get_objects_by_company(company_id: int):
         logging.info(f"Запрос объектов компании {company_id}")
         async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
             logging.info(f"Статус: {resp.status}")
+            text = await resp.text()
+            logging.info(f"Сырой ответ объектов: {text}")
+
             if resp.status != 200:
-                logging.error(await resp.text())
+                logging.error(text)
                 return []
-            data = await resp.json()
-            objects = data.get("maintenance_entities", [])
-            logging.info(f"Найдено объектов: {len(objects)}")
-            return objects
+
+            try:
+                data = await resp.json()
+
+                # OKDesk возвращает список напрямую, без ключа "maintenance_entities"
+                if isinstance(data, list):
+                    objects = data
+                else:
+                    objects = data.get("maintenance_entities", [])
+
+                logging.info(f"Найдено объектов после фикса: {len(objects)}")
+                return objects
+            except Exception as e:
+                logging.error(f"Ошибка парсинга объектов: {e}")
+                return []
 
 @dp.message(CommandStart())
 @dp.message(lambda message: message.text == "СТАРТ")
