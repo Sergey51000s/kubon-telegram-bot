@@ -5,11 +5,11 @@ import sys
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Text
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -34,11 +34,20 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
     phone = State()
-    select_object = State()
-    problem = State()
+    menu = State()  # После авторизации — главное меню
+    problem = State()  # Описание проблемы (если нужно)
 
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
+main_menu_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Срок действия подписки")],
+        [KeyboardButton(text="Обслуживание")]
+    ],
     resize_keyboard=True,
     one_time_keyboard=False
 )
@@ -88,10 +97,9 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # Если ответ — список (list) — используем его напрямую
+                # OKDesk возвращает список напрямую
                 if isinstance(data, list):
                     objects = data
-                # Если словарь — берём ключ "maintenance_entities" или пустой список
                 elif isinstance(data, dict):
                     objects = data.get("maintenance_entities", []) or []
                 else:
@@ -125,106 +133,51 @@ async def process_phone(message: Message, state: FSMContext):
         return
 
     fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
+
+    await message.answer(
+        f"Здравствуйте, {fio}!\n\n"
+        f"Какой у вас вопрос?",
+        reply_markup=main_menu_kb
+    )
+
+    await state.update_data(contact=contact)
+    await state.set_state(Form.menu)
+
+@dp.message(Form.menu, Text("Обслуживание"))
+async def process_service(message: Message, state: FSMContext):
+    data = await state.get_data()
+    contact = data.get("contact")
     company_id = contact.get("company_id")
 
     if not company_id:
-        await message.answer(f"Здравствуйте, {fio}!\nКарточка не привязана к компании.", reply_markup=start_kb)
-        await state.clear()
+        await message.answer("Карточка не привязана к компании.", reply_markup=main_menu_kb)
         return
 
     objects = await get_objects_by_company(company_id)
 
     if not objects:
-        await message.answer(
-            f"Здравствуйте, {fio}!\nУ вас пока нет зарегистрированных объектов обслуживания.",
-            reply_markup=start_kb
-        )
-        await state.clear()
+        await message.answer("У вас пока нет зарегистрированных объектов обслуживания.", reply_markup=main_menu_kb)
         return
 
-    object_list = "\n".join(
-        f"{i+1}. {obj.get('name', 'Без названия')} (№ {obj.get('serial_number', 'не указан')})"
-        for i, obj in enumerate(objects)
-    )
+    # Создаём клавиатуру с отдельными кнопками для каждого робота
+    service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
+    for obj in objects:
+        name = obj.get('name', 'Без названия')
+        serial = obj.get('serial_number', 'не указан')
+        button_text = f"{name} (№ {serial})"
+        service_kb.add(KeyboardButton(text=button_text))
 
-    await message.answer(
-        f"Здравствуйте, {fio}!\n\n"
-        f"Пожалуйста, выберите объект, с которым возникла проблема:\n\n"
-        f"{object_list}\n\n"
-        "Напишите номер (1, 2, 3...)",
-        reply_markup=start_kb
-    )
+    service_kb.add(KeyboardButton(text="Назад в меню"))
 
-    await state.update_data(contact=contact, objects=objects)
-    await state.set_state(Form.select_object)
+    await message.answer("Выберите робот:", reply_markup=service_kb)
 
-@dp.message(Form.select_object)
-async def process_object_selection(message: Message, state: FSMContext):
-    text = message.text.strip()
-    try:
-        num = int(text) - 1
-        data = await state.get_data()
-        objects = data.get("objects", [])
-        if 0 <= num < len(objects):
-            selected = objects[num]
-            await state.update_data(selected_object=selected)
-            await message.answer(
-                f"Вы выбрали: {selected.get('name', 'Без названия')} (№ {selected.get('serial_number', 'не указан')})\n\n"
-                "Опишите проблему:"
-            )
-            await state.set_state(Form.problem)
-            return
-    except ValueError:
-        pass
+@dp.message(Form.menu, Text("Срок действия подписки"))
+async def process_subscription(message: Message, state: FSMContext):
+    await message.answer("Срок действия подписки: пока не реализован. Скоро добавим!", reply_markup=main_menu_kb)
 
-    await message.answer("Пожалуйста, введите номер из списка (1, 2, 3...)")
-
-@dp.message(Form.problem)
-async def process_problem(message: Message, state: FSMContext):
-    problem = message.text.strip()
-    data = await state.get_data()
-
-    fio = data.get("contact", {}).get("first_name", "клиент")
-    obj_name = data.get("selected_object", {}).get("name", "не выбран")
-
-    summary = (
-        f"Спасибо, {fio}! Ожидайте звонок.\n\n"
-        f"Объект: {obj_name}\n"
-        f"Проблема: {problem}"
-    )
-    await message.answer(summary, reply_markup=start_kb)
-
-    # Отправка заявки в OKDesk
-    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
-        issue_data = {
-            "issue": {
-                "title": f"Заявка из Telegram: {fio}",
-                "description": summary,
-                "priority": "normal",
-                "contact_id": data.get("contact", {}).get("id")
-            }
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
-                    json=issue_data
-                ) as resp:
-                    if resp.status in (200, 201):
-                        logging.info("Заявка создана успешно!")
-                        await message.answer("Заявка успешно отправлена в систему OKDesk! Ожидайте звонка.")
-                    else:
-                        text = await resp.text()
-                        logging.error(f"Ошибка OKDesk: {resp.status} - {text}")
-                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
-    else:
-        await message.answer("OKDesk не настроен — данные получены.")
-
-    await state.clear()
+@dp.message(Form.menu, Text("Назад в меню"))
+async def back_to_menu(message: Message, state: FSMContext):
+    await message.answer("Главное меню:", reply_markup=main_menu_kb)
 
 async def main():
     print("Бот запущен! Используем polling.")
