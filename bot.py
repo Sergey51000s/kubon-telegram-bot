@@ -4,8 +4,8 @@ import os
 import sys
 import re
 
-from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart, Text
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -17,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN")  # ← замени на переменную окружения в продакшене
+OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -151,7 +151,7 @@ async def get_objects_by_company(company_id: int):
 
 # ─────────────── Хендлеры ───────────────
 @dp.message(CommandStart())
-@dp.message(Text("СТАРТ"))
+@dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
@@ -201,7 +201,7 @@ async def process_phone(message: Message, state: FSMContext):
     await state.set_state(Form.menu)
 
 
-@dp.message(Form.menu, Text("Обслуживание"))
+@dp.message(Form.menu, F.text == "Обслуживание")
 async def process_service(message: Message, state: FSMContext):
     data = await state.get_data()
     contact = data.get("contact", {})
@@ -236,7 +236,7 @@ async def process_service(message: Message, state: FSMContext):
     await message.answer("Выберите робот / объект:", reply_markup=kb)
 
 
-@dp.message(Form.menu, Text("Срок действия подписки"))
+@dp.message(Form.menu, F.text == "Срок действия подписки")
 async def process_subscription(message: Message, state: FSMContext):
     await message.answer(
         "Функция «Срок действия подписки» пока в разработке.\n"
@@ -245,7 +245,7 @@ async def process_subscription(message: Message, state: FSMContext):
     )
 
 
-@dp.message(Form.menu, Text(["Назад в меню", "В главное меню"]))
+@dp.message(Form.menu, F.text.in_({"Назад в меню", "В главное меню"}))
 async def back_to_main_menu(message: Message, state: FSMContext):
     await message.answer("Главное меню:", reply_markup=main_menu_kb)
 
@@ -255,7 +255,7 @@ async def unknown_in_menu(message: Message, state: FSMContext):
     await message.answer("Пожалуйста, выберите действие из меню:", reply_markup=main_menu_kb)
 
 
-@dp.message(Text("Ввести другой номер"))
+@dp.message(F.text == "Ввести другой номер")
 async def retry_phone(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
