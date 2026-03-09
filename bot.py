@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart, Text
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -97,9 +97,10 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # OKDesk возвращает список напрямую
+                # OKDesk возвращает список напрямую (list)
                 if isinstance(data, list):
                     objects = data
+                # Если словарь — берём ключ "maintenance_entities" или пустой список
                 elif isinstance(data, dict):
                     objects = data.get("maintenance_entities", []) or []
                 else:
@@ -160,7 +161,7 @@ async def process_service(message: Message, state: FSMContext):
         return
 
     # Создаём клавиатуру с отдельными кнопками для каждого робота
-    service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
+    service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=1)
     for obj in objects:
         name = obj.get('name', 'Без названия')
         serial = obj.get('serial_number', 'не указан')
