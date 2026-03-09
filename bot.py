@@ -34,8 +34,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 class Form(StatesGroup):
     phone = State()
-    menu = State()  # После авторизации — главное меню
-    problem = State()  # Описание проблемы (если нужно)
+    menu = State()
 
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
@@ -97,7 +96,7 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # OKDesk возвращает список напрямую (list)
+                # Если ответ — список, используем его напрямую
                 if isinstance(data, list):
                     objects = data
                 # Если словарь — берём ключ "maintenance_entities" или пустой список
@@ -160,7 +159,7 @@ async def process_service(message: Message, state: FSMContext):
         await message.answer("У вас пока нет зарегистрированных объектов обслуживания.", reply_markup=main_menu_kb)
         return
 
-    # Создаём клавиатуру с отдельными кнопками для каждого робота
+    # Клавиатура с отдельными кнопками для каждого робота
     service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=1)
     for obj in objects:
         name = obj.get('name', 'Без названия')
@@ -179,6 +178,10 @@ async def process_subscription(message: Message, state: FSMContext):
 @dp.message(Form.menu, Text("Назад в меню"))
 async def back_to_menu(message: Message, state: FSMContext):
     await message.answer("Главное меню:", reply_markup=main_menu_kb)
+
+@dp.message(Form.menu)
+async def unknown_menu(message: Message, state: FSMContext):
+    await message.answer("Выберите действие из меню:", reply_markup=main_menu_kb)
 
 async def main():
     print("Бот запущен! Используем polling.")
