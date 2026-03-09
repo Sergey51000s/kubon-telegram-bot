@@ -58,8 +58,10 @@ async def get_contact_by_phone(phone: str):
             try:
                 data = await resp.json()
 
-                # OKDesk может вернуть массив contacts или одиночный объект
+                # Вариант 1: массив contacts
                 contacts = data.get("contacts", [])
+
+                # Вариант 2: одиночный объект
                 if not contacts and isinstance(data, dict) and "id" in data:
                     contacts = [data]
 
@@ -89,11 +91,13 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # OKDesk возвращает список напрямую, без ключа "maintenance_entities"
+                # OKDesk возвращает список напрямую
                 if isinstance(data, list):
                     objects = data
-                else:
+                elif isinstance(data, dict):
                     objects = data.get("maintenance_entities", [])
+                else:
+                    objects = []
 
                 logging.info(f"Найдено объектов после фикса: {len(objects)}")
                 return objects
@@ -133,7 +137,10 @@ async def process_phone(message: Message, state: FSMContext):
     objects = await get_objects_by_company(company_id)
 
     if not objects:
-        await message.answer(f"Здравствуйте, {fio}!\nУ вас нет объектов обслуживания.", reply_markup=start_kb)
+        await message.answer(
+            f"Здравствуйте, {fio}!\nУ вас пока нет зарегистрированных объектов обслуживания.",
+            reply_markup=start_kb
+        )
         await state.clear()
         return
 
@@ -144,7 +151,7 @@ async def process_phone(message: Message, state: FSMContext):
 
     await message.answer(
         f"Здравствуйте, {fio}!\n\n"
-        f"Выберите объект с проблемой:\n\n"
+        f"Пожалуйста, выберите объект, с которым возникла проблема:\n\n"
         f"{object_list}\n\n"
         "Напишите номер (1, 2, 3...)",
         reply_markup=start_kb
@@ -172,7 +179,7 @@ async def process_object_selection(message: Message, state: FSMContext):
     except ValueError:
         pass
 
-    await message.answer("Введите номер из списка (1, 2, 3...)")
+    await message.answer("Пожалуйста, введите номер из списка (1, 2, 3...)")
 
 @dp.message(Form.problem)
 async def process_problem(message: Message, state: FSMContext):
@@ -188,6 +195,36 @@ async def process_problem(message: Message, state: FSMContext):
         f"Проблема: {problem}"
     )
     await message.answer(summary, reply_markup=start_kb)
+
+    # Отправка заявки в OKDesk
+    if OKDESK_API_TOKEN and OKDESK_SUBDOMAIN:
+        issue_data = {
+            "issue": {
+                "title": f"Заявка из Telegram: {fio}",
+                "description": summary,
+                "priority": "normal",
+                "contact_id": data.get("contact", {}).get("id")
+            }
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://{OKDESK_SUBDOMAIN}.okdesk.ru/api/v1/issues/?api_token={OKDESK_API_TOKEN}",
+                    json=issue_data
+                ) as resp:
+                    if resp.status in (200, 201):
+                        logging.info("Заявка создана успешно!")
+                        await message.answer("Заявка успешно отправлена в систему OKDesk! Ожидайте звонка.")
+                    else:
+                        text = await resp.text()
+                        logging.error(f"Ошибка OKDesk: {resp.status} - {text}")
+                        await message.answer("Ошибка при отправке заявки. Свяжемся вручную.")
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
+            await message.answer("Не удалось отправить заявку. Свяжемся вручную.")
+    else:
+        await message.answer("OKDesk не настроен — данные получены.")
 
     await state.clear()
 
