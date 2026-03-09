@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import re
+import io
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -20,10 +21,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.get
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-# Из твоих настроек
-ISSUE_KIND_ID = 2          # Обслуживание
-ISSUE_PRIORITY_ID = 2      # Обычный
-ISSUE_CHANNEL_ID = 1       # По умолчанию
+# Из настроек OkDesk
+ISSUE_KIND_ID = 2  # "Обслуживание" (service)
+ISSUE_PRIORITY_ID = 2  # "Обычный" (normal)
+ISSUE_CHANNEL_ID = 1  # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -138,21 +139,23 @@ async def search_equipment_by_serial(serial: str):
 
 async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int, description: str):
     payload = {
-        "api_token": OKDESK_API_TOKEN,
-        "issue[company_id]": str(company_id),
-        "issue[equipment_id]": str(equipment_id),
-        "issue[maintenance_entity_id]": str(maintenance_entity_id) if maintenance_entity_id else None,
-        "issue[title]": "Заявка из Telegram-бота",
-        "issue[content]": description or "Без описания",
-        "issue[kind_id]": str(ISSUE_KIND_ID),
-        "issue[priority_id]": str(ISSUE_PRIORITY_ID),
-        "issue[channel_id]": str(ISSUE_CHANNEL_ID),
+        "issue": {
+            "company_id": company_id,
+            "equipment_id": equipment_id,
+            "maintenance_entity_id": maintenance_entity_id if maintenance_entity_id else None,
+            "title": "Заявка из Telegram-бота",
+            "content": description or "Без описания",
+            "kind_id": ISSUE_KIND_ID,
+            "priority_id": ISSUE_PRIORITY_ID,
+            "channel_id": ISSUE_CHANNEL_ID,
+        }
     }
-    payload = {k: v for k, v in payload.items() if v is not None}
+    # Удаляем None
+    payload["issue"] = {k: v for k, v in payload["issue"].items() if v is not None}
 
     async with aiohttp.ClientSession() as session:
         logging.info(f"Создание заявки с payload: {payload}")
-        async with session.post(f"{OKDESK_API_BASE}/issues", data=payload) as resp:
+        async with session.post(f"{OKDESK_API_BASE}/issues", json=payload) as resp:
             text = await resp.text()
             logging.info(f"Ответ создания заявки: {resp.status} - {text}")
             if resp.status in (200, 201):
@@ -164,7 +167,7 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment[0]", file_bytes, filename=filename, content_type="application/octet-stream")
+    form.add_field("attachment[0]", file_bytes, filename=filename)
 
     async with aiohttp.ClientSession() as session:
         url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
@@ -254,20 +257,19 @@ async def process_serial(message: Message, state: FSMContext):
 
     await message.answer(info, reply_markup=confirm_issue_kb)
     await state.update_data(equipment=equipment, maintenance_entity_id=maintenance_entity_id)
-    await state.set_state(Form.issue_description)
 
 
-@dp.message(Form.issue_description, F.text == "Назад в меню")
-async def cancel_issue(message: Message, state: FSMContext):
-    await message.answer("Главное меню:", reply_markup=main_menu_kb)
-    await state.set_state(Form.menu)
+@dp.message(Form.issue_description, F.text == "Создать заявку")
+async def start_create_issue(message: Message, state: FSMContext):
+    await message.answer("Опишите проблему кратко (можно несколько предложений):", reply_markup=back_kb)
 
 
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
     desc = message.text.strip()
     if desc == "Назад в меню":
-        await cancel_issue(message, state)
+        await message.answer("Главное меню:", reply_markup=main_menu_kb)
+        await state.set_state(Form.menu)
         return
 
     await state.update_data(issue_description=desc)
@@ -349,18 +351,17 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
         try:
             file = await bot.get_file(file_id)
             file_path = file.file_path
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(file_url) as resp:
-                    if resp.status == 200:
-                        content = await resp.read()
-                        content_type = resp.headers.get("Content-Type", "application/octet-stream")
-                        ext = content_type.split('/')[-1] or "bin"
-                        filename = f"attach_{idx + 1}.{ext}"
-                        success = await upload_attachment(issue_id, content, filename)
-                        if success:
-                            uploaded += 1
+            bytes_io = io.BytesIO()
+            await bot.download_file(file_path, bytes_io)
+            bytes_io.seek(0)
+            content = bytes_io.read()
+
+            ext = file.file_path.split('.')[-1] or "jpg"
+            filename = f"attach_{idx + 1}.{ext}"
+            success = await upload_attachment(issue_id, content, filename)
+            if success:
+                uploaded += 1
         except Exception as e:
             logging.error(f"Ошибка загрузки файла {file_id}: {e}")
 
