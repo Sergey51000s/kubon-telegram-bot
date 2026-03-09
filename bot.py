@@ -20,9 +20,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.get
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-# Значения из настроек OkDesk
-ISSUE_KIND_ID = 2          # "Обслуживание" (service)
-ISSUE_PRIORITY_ID = 2      # "Обычный" (normal)
+# Из твоих настроек
+ISSUE_KIND_ID = 2          # Обслуживание
+ISSUE_PRIORITY_ID = 2      # Обычный
 ISSUE_CHANNEL_ID = 1       # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -46,7 +46,7 @@ class Form(StatesGroup):
     wait_attach = State()
 
 
-# Клавиатуры (без изменений)
+# Клавиатуры
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
     resize_keyboard=True
@@ -164,14 +164,14 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment[0]", file_bytes, filename=filename)
+    form.add_field("attachment[0]", file_bytes, filename=filename, content_type="application/octet-stream")
 
     async with aiohttp.ClientSession() as session:
         url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
         logging.info(f"Загрузка файла к заявке {issue_id}: {filename}")
         async with session.post(url, data=form) as resp:
             text = await resp.text()
-            logging.info(f"Ответ на загрузку: {resp.status} - {text}")
+            logging.info(f"Ответ на загрузку файла: {resp.status} - {text}")
             return resp.status in (200, 201)
 
 
@@ -345,7 +345,7 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
 
     # Загрузка файлов
     uploaded = 0
-    for file_id in attachments:
+    for idx, file_id in enumerate(attachments):
         try:
             file = await bot.get_file(file_id)
             file_path = file.file_path
@@ -357,7 +357,7 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
                         content = await resp.read()
                         content_type = resp.headers.get("Content-Type", "application/octet-stream")
                         ext = content_type.split('/')[-1] or "bin"
-                        filename = f"attach_{uploaded + 1}.{ext}"
+                        filename = f"attach_{idx + 1}.{ext}"
                         success = await upload_attachment(issue_id, content, filename)
                         if success:
                             uploaded += 1
