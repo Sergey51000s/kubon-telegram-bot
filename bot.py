@@ -46,7 +46,7 @@ class Form(StatesGroup):
     wait_attach = State()
 
 
-# Клавиатуры
+# Клавиатуры (все как раньше)
 start_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="СТАРТ")]], resize_keyboard=True)
 main_menu_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Срок действия подписки")], [KeyboardButton(text="Обслуживание")]], resize_keyboard=True)
 back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
@@ -112,9 +112,20 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
     }
     payload["issue"] = {k: v for k, v in payload["issue"].items() if v is not None}
 
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    params = {"api_token": OKDESK_API_TOKEN}
+
     async with aiohttp.ClientSession() as session:
         logging.info(f"Создание заявки с payload: {payload}")
-        async with session.post(f"{OKDESK_API_BASE}/issues", json=payload) as resp:
+        async with session.post(
+            f"{OKDESK_API_BASE}/issues",
+            json=payload,
+            headers=headers,
+            params=params
+        ) as resp:
             text = await resp.text()
             logging.info(f"Ответ создания заявки: {resp.status} - {text}")
             if resp.status in (200, 201):
@@ -126,7 +137,7 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment[0]", file_bytes, filename=filename)
+    form.add_field("attachment[0]", file_bytes, filename=filename, content_type="application/octet-stream")
 
     async with aiohttp.ClientSession() as session:
         url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
@@ -137,7 +148,7 @@ async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
             return resp.status in (200, 201)
 
 
-# Хендлеры
+# Хендлеры (без изменений в логике, только фикс состояний)
 @dp.message(CommandStart())
 @dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
