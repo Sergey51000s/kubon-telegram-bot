@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, ContentType
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -19,6 +19,11 @@ import aiohttp
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
+
+# Значения из твоих настроек OkDesk
+ISSUE_KIND_ID = 2          # Тип заявки: "Обслуживание" (код service)
+ISSUE_PRIORITY_ID = 2      # Приоритет: "Обычный" (код normal)
+ISSUE_CHANNEL_ID = 1       # Канал по умолчанию (если не нужен — можно удалить из payload)
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
     print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
@@ -35,15 +40,17 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 class Form(StatesGroup):
     phone = State()
     menu = State()
-    serial_input = State()     # новый стейт для ввода серийного номера
-    issue_description = State() # для описания заявки (если нужно)
+    serial_input = State()          # ввод серийного номера
+    issue_description = State()     # описание проблемы
+    ask_attach = State()            # "Желаете прикрепить фото?"
+    wait_attach = State()           # ожидание файлов
+    issue_ready = State()           # готово к отправке
 
 
 # Клавиатуры
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
-    resize_keyboard=True,
-    one_time_keyboard=False
+    resize_keyboard=True
 )
 
 main_menu_kb = ReplyKeyboardMarkup(
@@ -51,14 +58,12 @@ main_menu_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="Срок действия подписки")],
         [KeyboardButton(text="Обслуживание")]
     ],
-    resize_keyboard=True,
-    one_time_keyboard=False
+    resize_keyboard=True
 )
 
 back_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Назад в меню")]],
-    resize_keyboard=True,
-    one_time_keyboard=False
+    resize_keyboard=True
 )
 
 another_phone_kb = ReplyKeyboardMarkup(
@@ -72,8 +77,21 @@ another_phone_kb = ReplyKeyboardMarkup(
 confirm_issue_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Создать заявку")],
-        [KeyboardButton(text="Назад")]
+        [KeyboardButton(text="Назад в меню")]
     ],
+    resize_keyboard=True
+)
+
+attach_choice_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Да, прикрепить фото/видео")],
+        [KeyboardButton(text="Нет, создать заявку без файлов")]
+    ],
+    resize_keyboard=True
+)
+
+done_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="Готово, отправить заявку")]],
     resize_keyboard=True
 )
 
@@ -92,8 +110,10 @@ def normalize_phone(raw: str) -> str:
 async def get_contact_by_phone(phone: str):
     params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
+        logging.info(f"Поиск контакта: {phone}")
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             if resp.status != 200:
+                logging.error(f"Ошибка /contacts: {resp.status}")
                 return None
             data = await resp.json()
             if isinstance(data, list) and data:
@@ -106,8 +126,10 @@ async def get_contact_by_phone(phone: str):
 async def search_equipment_by_serial(serial: str):
     params = {"api_token": OKDESK_API_TOKEN, "serial_number": serial}
     async with aiohttp.ClientSession() as session:
+        logging.info(f"Поиск оборудования по serial: {serial}")
         async with session.get(f"{OKDESK_API_BASE}/equipments", params=params) as resp:
             if resp.status != 200:
+                logging.error(f"Ошибка поиска: {resp.status}")
                 return None
             data = await resp.json()
             if isinstance(data, dict) and "id" in data:
@@ -120,26 +142,47 @@ async def create_issue(company_id: int, equipment_id: int, description: str):
         "api_token": OKDESK_API_TOKEN,
         "issue": {
             "company_id": company_id,
-            "maintenance_entity_id": None,  # если нужно — добавь
             "equipment_id": equipment_id,
-            "kind_id": 1,  # ID типа заявки — узнай в справочнике OkDesk
-            "priority_id": 1,  # ID приоритета
             "title": "Заявка из Telegram-бота",
-            "content": description,
-            "channel_id": 1  # канал — уточни
+            "content": description or "Без описания",
+            "kind_id": ISSUE_KIND_ID,        # Тип заявки: Обслуживание
+            "priority_id": ISSUE_PRIORITY_ID,  # Приоритет: Обычный
+            "channel_id": ISSUE_CHANNEL_ID     # Канал (если требуется)
         }
     }
+
     async with aiohttp.ClientSession() as session:
+        logging.info(f"Создание заявки с payload: {payload}")
         async with session.post(f"{OKDESK_API_BASE}/issues", json=payload) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
-                return data.get("id")  # номер созданной заявки
+                issue_id = data.get("id")
+                logging.info(f"Заявка создана: {issue_id}")
+                return issue_id
             else:
                 text = await resp.text()
                 logging.error(f"Ошибка создания заявки: {resp.status} - {text}")
                 return None
 
 
+async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
+    form = aiohttp.FormData()
+    form.add_field("api_token", OKDESK_API_TOKEN)
+    form.add_field("attachment", file_bytes, filename=filename, content_type="application/octet-stream")
+
+    async with aiohttp.ClientSession() as session:
+        url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
+        async with session.post(url, data=form) as resp:
+            if resp.status in (200, 201):
+                logging.info(f"Файл {filename} загружен к заявке {issue_id}")
+                return True
+            else:
+                text = await resp.text()
+                logging.error(f"Ошибка загрузки файла: {resp.status} - {text}")
+                return False
+
+
+# Хендлеры
 @dp.message(CommandStart())
 @dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
@@ -172,13 +215,13 @@ async def process_phone(message: Message, state: FSMContext):
 @dp.message(Form.menu, F.text == "Обслуживание")
 async def process_service(message: Message, state: FSMContext):
     await message.answer(
-        "Введите серийный номер (или инвентарный) вашего робота / оборудования:",
+        "Введите серийный номер вашего робота или оборудования:",
         reply_markup=back_kb
     )
     await state.set_state(Form.serial_input)
 
 
-@dp.message(Form.serial_input, F.text == "Назад")
+@dp.message(Form.serial_input, F.text == "Назад в меню")
 async def cancel_serial(message: Message, state: FSMContext):
     await message.answer("Главное меню:", reply_markup=main_menu_kb)
     await state.set_state(Form.menu)
@@ -191,36 +234,99 @@ async def process_serial(message: Message, state: FSMContext):
         await message.answer("Введите номер, пожалуйста.")
         return
 
-    data = await state.get_data()
-    contact = data.get("contact", {})
-    company_id = contact.get("company_id")
-
     equipment = await search_equipment_by_serial(serial)
 
     if not equipment:
         await message.answer(
-            f"Оборудование с номером {serial} не найдено.\nПопробуйте другой номер или обратитесь к менеджеру.",
+            f"Оборудование с номером {serial} не найдено.\nПроверьте номер или обратитесь к менеджеру.",
             reply_markup=main_menu_kb
         )
         await state.set_state(Form.menu)
         return
 
-    # Показываем информацию
     kind = equipment.get("equipment_kind", {}).get("name", "Не указан")
+    manufacturer = equipment.get("equipment_manufacturer", {}).get("name", "")
     model = equipment.get("equipment_model", {}).get("name", "")
     serial_found = equipment.get("serial_number", "не указан")
-    info_text = f"<b>Найдено оборудование:</b>\nВид: {kind}\nМодель: {model}\nСерийный №: {serial_found}"
 
-    await message.answer(info_text, reply_markup=confirm_issue_kb)
+    info = (
+        f"<b>Найдено оборудование:</b>\n"
+        f"Вид: {kind}\n"
+        f"Производитель: {manufacturer}\n"
+        f"Модель: {model}\n"
+        f"Серийный №: {serial_found}"
+    )
+
+    await message.answer(info, reply_markup=confirm_issue_kb)
     await state.update_data(equipment=equipment)
     await state.set_state(Form.issue_description)
 
 
 @dp.message(Form.issue_description, F.text == "Создать заявку")
-async def create_new_issue(message: Message, state: FSMContext):
+async def start_create_issue(message: Message, state: FSMContext):
+    await message.answer("Опишите проблему кратко (можно несколько предложений):")
+    await state.set_state(Form.issue_description)
+
+
+@dp.message(Form.issue_description)
+async def process_description(message: Message, state: FSMContext):
+    desc = message.text.strip()
+    await state.update_data(issue_description=desc)
+
+    await message.answer(
+        "Желаете прикрепить фото или видео к заявке?",
+        reply_markup=attach_choice_kb
+    )
+    await state.set_state(Form.ask_attach)
+
+
+@dp.message(Form.ask_attach, F.text == "Нет, создать заявку без файлов")
+async def create_without_attach(message: Message, state: FSMContext):
+    await create_and_finish_issue(message, state, [])
+
+
+@dp.message(Form.ask_attach, F.text == "Да, прикрепить фото/видео")
+async def request_attach(message: Message, state: FSMContext):
+    await message.answer(
+        "Пришлите фото, видео или документ (можно несколько).\n\nКогда закончите — нажмите «Готово, отправить заявку»",
+        reply_markup=done_kb
+    )
+    await state.set_state(Form.wait_attach)
+
+
+@dp.message(Form.wait_attach, F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.VIDEO}))
+async def collect_attach(message: Message, state: FSMContext):
+    data = await state.get_data()
+    attachments = data.get("attachments", [])
+
+    file_id = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        file_id = message.document.file_id
+    elif message.video:
+        file_id = message.video.file_id
+
+    if file_id:
+        attachments.append(file_id)
+        await state.update_data(attachments=attachments)
+        await message.answer("Файл добавлен. Присылайте ещё или нажмите «Готово».")
+    else:
+        await message.answer("Поддерживаются фото, видео, документы.")
+
+
+@dp.message(Form.wait_attach, F.text == "Готово, отправить заявку")
+async def finish_with_attach(message: Message, state: FSMContext):
+    data = await state.get_data()
+    attachments = data.get("attachments", [])
+    await create_and_finish_issue(message, state, attachments)
+
+
+async def create_and_finish_issue(message: Message, state: FSMContext, attachments: list):
     data = await state.get_data()
     contact = data.get("contact", {})
     equipment = data.get("equipment", {})
+    description = data.get("issue_description", "Без описания")
 
     company_id = contact.get("company_id")
     equipment_id = equipment.get("id")
@@ -230,39 +336,58 @@ async def create_new_issue(message: Message, state: FSMContext):
         await state.set_state(Form.menu)
         return
 
-    # Здесь можно запросить описание проблемы
-    await message.answer("Опишите проблему кратко (или напишите 'Срочная поломка'):")
-    await state.set_state(Form.issue_description)  # пока оставим тот же стейт
-
-
-@dp.message(Form.issue_description)
-async def process_issue_description(message: Message, state: FSMContext):
-    description = message.text.strip()
-    if not description:
-        await message.answer("Опишите проблему, пожалуйста.")
-        return
-
-    data = await state.get_data()
-    contact = data.get("contact", {})
-    equipment = data.get("equipment", {})
-
-    company_id = contact.get("company_id")
-    equipment_id = equipment.get("id")
-
     issue_id = await create_issue(company_id, equipment_id, description)
 
-    if issue_id:
-        await message.answer(
-            f"Заявка создана успешно!\nНомер заявки: {issue_id}\nСпасибо за обращение.",
-            reply_markup=main_menu_kb
-        )
-    else:
+    if not issue_id:
         await message.answer("Не удалось создать заявку. Обратитесь к менеджеру.", reply_markup=main_menu_kb)
+        await state.set_state(Form.menu)
+        return
 
+    # Загрузка файлов
+    uploaded = 0
+    for file_id in attachments:
+        try:
+            file = await bot.get_file(file_id)
+            file_path = file.file_path
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(file_url) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        ext = "jpg" if message.photo else "mp4" if message.video else "pdf"
+                        filename = f"attach_{uploaded + 1}.{ext}"
+                        success = await upload_attachment(issue_id, content, filename)
+                        if success:
+                            uploaded += 1
+        except Exception as e:
+            logging.error(f"Ошибка загрузки файла {file_id}: {e}")
+
+    text = f"Заявка создана успешно!\nНомер заявки: {issue_id}"
+    if uploaded > 0:
+        text += f"\nПрикреплено файлов: {uploaded}"
+    await message.answer(text, reply_markup=main_menu_kb)
+    await state.clear()
     await state.set_state(Form.menu)
 
 
-# Остальные хендлеры (Срок подписки, назад и т.д.) — без изменений
+@dp.message(Form.menu, F.text == "Срок действия подписки")
+async def process_subscription(message: Message, state: FSMContext):
+    await message.answer(
+        "Функция «Срок действия подписки» пока в разработке.\nСкоро появится!",
+        reply_markup=main_menu_kb
+    )
+
+
+@dp.message(F.text.in_({"Назад в меню", "Назад"}))
+async def back_to_menu(message: Message, state: FSMContext):
+    await message.answer("Главное меню:", reply_markup=main_menu_kb)
+    await state.set_state(Form.menu)
+
+
+@dp.message(Form.menu)
+async def unknown_menu(message: Message, state: FSMContext):
+    await message.answer("Выберите пункт меню:", reply_markup=main_menu_kb)
 
 
 async def main():
