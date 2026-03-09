@@ -109,12 +109,12 @@ async def get_contact_by_phone(phone: str):
                 return None
 
 
-async def get_objects_by_company(company_id: int):
+async def get_equipment_by_company(company_id: int):
     params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
     async with aiohttp.ClientSession() as session:
-        logging.info(f"Запрос объектов компании {company_id}")
-        async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
-            logging.info(f"Статус /maintenance_entities: {resp.status}")
+        logging.info(f"Запрос оборудования компании {company_id}")
+        async with session.get(f"{OKDESK_API_BASE}/equipments", params=params) as resp:
+            logging.info(f"Статус /equipments: {resp.status}")
             if resp.status != 200:
                 text = await resp.text()
                 logging.error(f"Ошибка {resp.status}: {text}")
@@ -122,30 +122,30 @@ async def get_objects_by_company(company_id: int):
 
             try:
                 data = await resp.json()
-                logging.info(f"Тип ответа объектов: {type(data).__name__}")
+                logging.info(f"Тип ответа оборудования: {type(data).__name__}")
 
                 if isinstance(data, list):
-                    logging.info(f"Получен список из {len(data)} объектов")
+                    logging.info(f"Получен список из {len(data)} единиц оборудования")
                     return data
 
                 if isinstance(data, dict):
                     for key in [
-                        "maintenance_entities",
-                        "objects",
+                        "equipments",
+                        "equipment",
                         "items",
                         "data",
-                        "maintenance_objects",
-                        "results"
+                        "results",
+                        "maintenance_entities"  # на случай, если вернётся старый формат
                     ]:
                         if key in data and isinstance(data[key], list):
-                            logging.info(f"Найден ключ '{key}' → {len(data[key])} объектов")
+                            logging.info(f"Найден ключ '{key}' → {len(data[key])}")
                             return data[key]
 
-                logging.warning("Не удалось найти список объектов в ответе")
+                logging.warning("Не удалось найти список оборудования в ответе")
                 return []
 
             except Exception as e:
-                logging.error(f"Ошибка парсинга объектов: {e}", exc_info=True)
+                logging.error(f"Ошибка парсинга оборудования: {e}", exc_info=True)
                 return []
 
 
@@ -214,26 +214,26 @@ async def process_service(message: Message, state: FSMContext):
         )
         return
 
-    objects = await get_objects_by_company(company_id)
+    equipments = await get_equipment_by_company(company_id)
 
-    if not objects:
+    if not equipments:
         await message.answer(
-            "У вас пока нет зарегистрированных объектов обслуживания.",
+            "У вас пока нет зарегистрированного оборудования / роботов.",
             reply_markup=main_menu_kb
         )
         return
 
-    # Клавиатура с объектами
+    # Клавиатура с оборудованием
     kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    for obj in objects:
-        name = obj.get("name", "Без названия")
-        serial = obj.get("serial_number", "не указан")
-        text = f"{name} (№ {serial})"
+    for item in equipments:
+        name = item.get("name", "Без названия")
+        serial = item.get("serial_number", "не указан")
+        text = f"{name} (сер. № {serial})"
         kb.add(KeyboardButton(text=text))
 
     kb.add(KeyboardButton(text="Назад в меню"))
 
-    await message.answer("Выберите робот / объект:", reply_markup=kb)
+    await message.answer("Выберите оборудование / робота:", reply_markup=kb)
 
 
 @dp.message(Form.menu, F.text == "Срок действия подписки")
