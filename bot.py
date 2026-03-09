@@ -120,32 +120,39 @@ async def get_equipment_by_company(company_id: int):
                 logging.error(f"Ошибка {resp.status}: {text}")
                 return []
 
+            raw_text = await resp.text()
+            logging.info(f"СЫРОЙ JSON ОТВЕТ /equipments (первые 2000 символов): {raw_text[:2000]}...")
+
             try:
                 data = await resp.json()
                 logging.info(f"Тип ответа оборудования: {type(data).__name__}")
 
                 if isinstance(data, list):
-                    logging.info(f"Получен список из {len(data)} единиц оборудования")
+                    logging.info(f"Ответ — прямой список из {len(data)} элементов")
                     return data
 
                 if isinstance(data, dict):
-                    for key in [
-                        "equipments",
-                        "equipment",
-                        "items",
-                        "data",
-                        "results",
-                        "maintenance_entities"  # на случай, если вернётся старый формат
-                    ]:
-                        if key in data and isinstance(data[key], list):
-                            logging.info(f"Найден ключ '{key}' → {len(data[key])}")
-                            return data[key]
+                    logging.info(f"КЛЮЧИ В ОТВЕТЕ: {list(data.keys())}")
 
-                logging.warning("Не удалось найти список оборудования в ответе")
+                    # Пробуем все возможные ключи
+                    for key in data:
+                        value = data[key]
+                        if isinstance(value, list):
+                            logging.info(f"НАЙДЕН СПИСОК ПО КЛЮЧУ '{key}' → {len(value)} элементов")
+                            return value
+                        # Если вложенный dict со списком
+                        elif isinstance(value, dict):
+                            for subkey in value:
+                                subvalue = value[subkey]
+                                if isinstance(subvalue, list):
+                                    logging.info(f"НАЙДЕН СПИСОК ВО ВЛОЖЕННОМ КЛЮЧЕ '{key}.{subkey}' → {len(subvalue)}")
+                                    return subvalue
+
+                logging.warning("Список оборудования не найден ни по одному ключу")
                 return []
 
             except Exception as e:
-                logging.error(f"Ошибка парсинга оборудования: {e}", exc_info=True)
+                logging.error(f"Ошибка парсинга JSON: {e}", exc_info=True)
                 return []
 
 
