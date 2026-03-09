@@ -21,9 +21,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.get
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-# Из твоих настроек OkDesk
-ISSUE_KIND_ID = 2          # Обслуживание (service)
-ISSUE_PRIORITY_ID = 2      # Обычный (normal)
+ISSUE_KIND_ID = 2          # Обслуживание
+ISSUE_PRIORITY_ID = 2      # Обычный
 ISSUE_CHANNEL_ID = 1       # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -98,14 +97,16 @@ async def search_equipment_by_serial(serial: str):
             return None
 
 
-async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int | None, description: str):
+async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id: int | None, description: str, equipment_info: str):
+    full_description = f"{description}\n\n**Серийный номер робота:** {equipment_info}"
+
     payload = {
         "issue": {
             "company_id": company_id,
             "equipment_id": equipment_id,
             "maintenance_entity_id": maintenance_entity_id if maintenance_entity_id else None,
             "title": "Заявка из Telegram-бота",
-            "description": description or "Без описания",  # ← правильное поле!
+            "description": full_description,
             "kind_id": ISSUE_KIND_ID,
             "priority_id": ISSUE_PRIORITY_ID,
             "channel_id": ISSUE_CHANNEL_ID,
@@ -139,18 +140,19 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment", file_bytes, filename=filename, content_type="image/jpeg")
+    form.add_field("comment[content]", "Фото/видео от клиента из Telegram")
+    form.add_field("comment[attachment]", file_bytes, filename=filename, content_type="image/jpeg")
 
     headers = {
         "Accept": "application/json"
     }
 
     async with aiohttp.ClientSession() as session:
-        url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
-        logging.info(f"Загрузка файла к заявке {issue_id}: {filename}")
+        url = f"{OKDESK_API_BASE}/issues/{issue_id}/comments"
+        logging.info(f"Загрузка файла как комментария к заявке {issue_id}: {filename}, размер: {len(file_bytes)} байт")
         async with session.post(url, data=form, headers=headers) as resp:
             text = await resp.text()
-            logging.info(f"Ответ на загрузку файла: {resp.status} - {text}")
+            logging.info(f"Ответ на загрузку файла (как комментарий): {resp.status} - {text}")
             return resp.status in (200, 201)
 
 
@@ -232,7 +234,11 @@ async def process_serial(message: Message, state: FSMContext):
     )
 
     await message.answer(info, reply_markup=confirm_issue_kb)
-    await state.update_data(equipment=equipment, maintenance_entity_id=maintenance_entity_id)
+    await state.update_data(
+        equipment=equipment,
+        maintenance_entity_id=maintenance_entity_id,
+        equipment_info=f"{kind} {manufacturer} {model} (сер. № {serial_found})"
+    )
     await state.set_state(Form.issue_description)
 
 
@@ -315,6 +321,7 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
     equipment = data.get("equipment", {})
     description = data.get("issue_description", "Без описания")
     maintenance_entity_id = data.get("maintenance_entity_id", None)
+    equipment_info = data.get("equipment_info", "не указан")
 
     company_id = contact.get("company_id")
     equipment_id = equipment.get("id")
@@ -324,14 +331,13 @@ async def create_and_finish_issue(message: Message, state: FSMContext, attachmen
         await state.set_state(Form.menu)
         return
 
-    issue_id = await create_issue(company_id, equipment_id, maintenance_entity_id, description)
+    issue_id = await create_issue(company_id, equipment_id, maintenance_entity_id, description, equipment_info)
 
     if not issue_id:
         await message.answer("Не удалось создать заявку. Обратитесь к менеджеру.", reply_markup=main_menu_kb)
         await state.set_state(Form.menu)
         return
 
-    # Загрузка файлов
     uploaded = 0
     for idx, file_id in enumerate(attachments):
         try:
