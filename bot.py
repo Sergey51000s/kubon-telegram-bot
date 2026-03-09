@@ -16,13 +16,14 @@ from aiogram.enums import ParseMode
 
 import aiohttp
 
-# === Настройки ===
+# ==================== НАСТРОЙКИ ====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 OKDESK_API_TOKEN = os.getenv("OKDESK_API_TOKEN") or "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
-ISSUE_KIND_ID = 2          # Обслуживание
-ISSUE_PRIORITY_ID = 2      # Обычный
+# Из твоих настроек OkDesk
+ISSUE_KIND_ID = 2          # Обслуживание (service)
+ISSUE_PRIORITY_ID = 2      # Обычный (normal)
 ISSUE_CHANNEL_ID = 1       # По умолчанию
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -46,7 +47,7 @@ class Form(StatesGroup):
     wait_attach = State()
 
 
-# Клавиатуры (все как раньше)
+# ==================== КЛАВИАТУРЫ ====================
 start_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="СТАРТ")]], resize_keyboard=True)
 main_menu_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Срок действия подписки")], [KeyboardButton(text="Обслуживание")]], resize_keyboard=True)
 back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
@@ -104,7 +105,7 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
             "equipment_id": equipment_id,
             "maintenance_entity_id": maintenance_entity_id if maintenance_entity_id else None,
             "title": "Заявка из Telegram-бота",
-            "content": description or "Без описания",
+            "description": description or "Без описания",  # ← правильное поле!
             "kind_id": ISSUE_KIND_ID,
             "priority_id": ISSUE_PRIORITY_ID,
             "channel_id": ISSUE_CHANNEL_ID,
@@ -113,7 +114,8 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
     payload["issue"] = {k: v for k, v in payload["issue"].items() if v is not None}
 
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
     params = {"api_token": OKDESK_API_TOKEN}
@@ -137,18 +139,22 @@ async def create_issue(company_id: int, equipment_id: int, maintenance_entity_id
 async def upload_attachment(issue_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
     form.add_field("api_token", OKDESK_API_TOKEN)
-    form.add_field("attachment[0]", file_bytes, filename=filename, content_type="application/octet-stream")
+    form.add_field("attachment", file_bytes, filename=filename, content_type="image/jpeg")
+
+    headers = {
+        "Accept": "application/json"
+    }
 
     async with aiohttp.ClientSession() as session:
         url = f"{OKDESK_API_BASE}/issues/{issue_id}/attachments"
         logging.info(f"Загрузка файла к заявке {issue_id}: {filename}")
-        async with session.post(url, data=form) as resp:
+        async with session.post(url, data=form, headers=headers) as resp:
             text = await resp.text()
             logging.info(f"Ответ на загрузку файла: {resp.status} - {text}")
             return resp.status in (200, 201)
 
 
-# Хендлеры (без изменений в логике, только фикс состояний)
+# ==================== ХЕНДЛЕРЫ ====================
 @dp.message(CommandStart())
 @dp.message(F.text == "СТАРТ")
 async def cmd_start(message: Message, state: FSMContext):
@@ -373,7 +379,7 @@ async def unknown_menu(message: Message, state: FSMContext):
 
 
 async def main():
-    print("KubonSupportBot запущен (aiogram 3.x + OKDesk)")
+    print("KubonSupportBot запущен (aiogram 3.x + OkDesk)")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 
