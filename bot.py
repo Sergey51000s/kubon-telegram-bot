@@ -2,13 +2,14 @@ import asyncio
 import logging
 import os
 import sys
+import re
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Text
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -16,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
+OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"  # ← замени на переменную окружения в продакшене
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -35,6 +36,8 @@ class Form(StatesGroup):
     phone = State()
     menu = State()
 
+
+# ─────────────── Клавиатуры ───────────────
 start_kb = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="СТАРТ")]],
     resize_keyboard=True,
@@ -50,95 +53,146 @@ main_menu_kb = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
+back_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="Назад в меню")]],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
+another_phone_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Ввести другой номер")],
+        [KeyboardButton(text="СТАРТ")]
+    ],
+    resize_keyboard=True
+)
+
+
+# ─────────────── Утилиты ───────────────
+def normalize_phone(raw: str) -> str:
+    """Приводим телефон к виду +7XXXXXXXXXX"""
+    digits = re.sub(r'[^0-9+]', '', raw.strip())
+    if digits.startswith('8'):
+        digits = '+7' + digits[1:]
+    if not digits.startswith('+'):
+        digits = '+7' + digits
+    if len(digits) > 12:
+        digits = digits[:12]
+    return digits
+
+
 async def get_contact_by_phone(phone: str):
     params = {"api_token": OKDESK_API_TOKEN, "phone": phone}
     async with aiohttp.ClientSession() as session:
-        logging.info(f"Запрос по телефону: {phone}")
+        logging.info(f"Поиск контакта по телефону: {phone}")
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
-            logging.info(f"Статус: {resp.status}")
-            text = await resp.text()
-            logging.info(f"Сырой ответ контакта: {text}")
-
+            logging.info(f"Статус /contacts: {resp.status}")
             if resp.status != 200:
+                text = await resp.text()
+                logging.error(f"Ошибка API /contacts {resp.status}: {text}")
                 return None
 
             try:
                 data = await resp.json()
+                logging.info(f"Тип ответа /contacts: {type(data).__name__}")
 
-                # Обрабатываем оба варианта: массив или одиночный объект
                 if isinstance(data, list):
-                    contacts = data
+                    return data[0] if data else None
                 elif isinstance(data, dict):
-                    contacts = data.get("contacts", [])
-                    if not contacts and "id" in data:
-                        contacts = [data]
-                else:
-                    contacts = []
-
-                logging.info(f"Найдено контактов: {len(contacts)}")
-                if not contacts:
-                    return None
-
-                return contacts[0]
-            except Exception as e:
-                logging.error(f"Ошибка парсинга контакта: {e}")
+                    if "contacts" in data and isinstance(data["contacts"], list):
+                        return data["contacts"][0] if data["contacts"] else None
+                    if "id" in data:  # одиночный объект
+                        return data
                 return None
+            except Exception as e:
+                logging.error(f"Ошибка парсинга контакта: {e}", exc_info=True)
+                return None
+
 
 async def get_objects_by_company(company_id: int):
     params = {"api_token": OKDESK_API_TOKEN, "company_id": company_id}
     async with aiohttp.ClientSession() as session:
         logging.info(f"Запрос объектов компании {company_id}")
         async with session.get(f"{OKDESK_API_BASE}/maintenance_entities", params=params) as resp:
-            logging.info(f"Статус: {resp.status}")
-            text = await resp.text()
-            logging.info(f"Сырой ответ объектов: {text}")
-
+            logging.info(f"Статус /maintenance_entities: {resp.status}")
             if resp.status != 200:
-                logging.error(text)
+                text = await resp.text()
+                logging.error(f"Ошибка {resp.status}: {text}")
                 return []
 
             try:
                 data = await resp.json()
+                logging.info(f"Тип ответа объектов: {type(data).__name__}")
 
-                # OKDesk возвращает список напрямую — берём его
                 if isinstance(data, list):
-                    objects = data
-                elif isinstance(data, dict):
-                    objects = data.get("maintenance_entities", []) or []
-                else:
-                    objects = []
+                    logging.info(f"Получен список из {len(data)} объектов")
+                    return data
 
-                logging.info(f"Найдено объектов: {len(objects)}")
-                return objects
-            except Exception as e:
-                logging.error(f"Ошибка парсинга объектов: {e}")
+                if isinstance(data, dict):
+                    for key in [
+                        "maintenance_entities",
+                        "objects",
+                        "items",
+                        "data",
+                        "maintenance_objects",
+                        "results"
+                    ]:
+                        if key in data and isinstance(data[key], list):
+                            logging.info(f"Найден ключ '{key}' → {len(data[key])} объектов")
+                            return data[key]
+
+                logging.warning("Не удалось найти список объектов в ответе")
                 return []
 
+            except Exception as e:
+                logging.error(f"Ошибка парсинга объектов: {e}", exc_info=True)
+                return []
+
+
+# ─────────────── Хендлеры ───────────────
 @dp.message(CommandStart())
-@dp.message(lambda message: message.text == "СТАРТ")
+@dp.message(Text("СТАРТ"))
 async def cmd_start(message: Message, state: FSMContext):
-    logging.info(f"СТАРТ от {message.from_user.id}")
     await state.clear()
-    await message.answer("Здравствуйте! Укажите ваш номер телефона (+7...):", reply_markup=start_kb)
+    await message.answer(
+        "Здравствуйте!\nУкажите ваш номер телефона в формате +7...",
+        reply_markup=start_kb
+    )
     await state.set_state(Form.phone)
+
 
 @dp.message(Form.phone)
 async def process_phone(message: Message, state: FSMContext):
-    phone = message.text.strip()
-    logging.info(f"Телефон введён: {phone}")
+    raw_phone = message.text.strip()
+    phone = normalize_phone(raw_phone)
+    logging.info(f"Нормализованный телефон: {phone} (было: {raw_phone})")
+
+    if not phone.startswith("+7") or len(phone) != 12:
+        await message.answer(
+            "Пожалуйста, введите номер в формате +7XXXXXXXXXX",
+            reply_markup=another_phone_kb
+        )
+        return
+
     await state.update_data(phone=phone)
 
     contact = await get_contact_by_phone(phone)
 
     if not contact:
-        await message.answer("Клиент с таким телефоном не найден. Обратитесь к менеджеру.", reply_markup=start_kb)
+        await message.answer(
+            "Клиент с таким номером не найден в системе.\n"
+            "Попробуйте другой номер или обратитесь к менеджеру.",
+            reply_markup=another_phone_kb
+        )
         await state.clear()
         return
 
-    fio = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip() or "клиент"
+    first = contact.get("first_name", "").strip()
+    last = contact.get("last_name", "").strip()
+    fio = f"{first} {last}".strip() or "Клиент"
 
     await message.answer(
-        f"Здравствуйте, {fio}!\n\n"
+        f"Здравствуйте, <b>{fio}</b>!\n\n"
         f"Какой у вас вопрос?",
         reply_markup=main_menu_kb
     )
@@ -146,49 +200,75 @@ async def process_phone(message: Message, state: FSMContext):
     await state.update_data(contact=contact)
     await state.set_state(Form.menu)
 
+
 @dp.message(Form.menu, Text("Обслуживание"))
 async def process_service(message: Message, state: FSMContext):
     data = await state.get_data()
-    contact = data.get("contact")
-    company_id = contact.get("company_id")
+    contact = data.get("contact", {})
 
+    company_id = contact.get("company_id")
     if not company_id:
-        await message.answer("Карточка не привязана к компании.", reply_markup=main_menu_kb)
+        await message.answer(
+            "Ваша карточка не привязана к компании.\nОбратитесь к менеджеру.",
+            reply_markup=main_menu_kb
+        )
         return
 
     objects = await get_objects_by_company(company_id)
 
     if not objects:
-        await message.answer("У вас пока нет зарегистрированных объектов обслуживания.", reply_markup=main_menu_kb)
+        await message.answer(
+            "У вас пока нет зарегистрированных объектов обслуживания.",
+            reply_markup=main_menu_kb
+        )
         return
 
-    # Клавиатура с отдельными кнопками для каждого робота
-    service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=1)
+    # Клавиатура с объектами
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     for obj in objects:
-        name = obj.get('name', 'Без названия') if isinstance(obj, dict) else "Без названия"
-        serial = obj.get('serial_number', 'не указан') if isinstance(obj, dict) else "не указан"
-        button_text = f"{name} (№ {serial})"
-        service_kb.add(KeyboardButton(text=button_text))
+        name = obj.get("name", "Без названия")
+        serial = obj.get("serial_number", "не указан")
+        text = f"{name} (№ {serial})"
+        kb.add(KeyboardButton(text=text))
 
-    service_kb.add(KeyboardButton(text="Назад в меню"))
+    kb.add(KeyboardButton(text="Назад в меню"))
 
-    await message.answer("Выберите робот:", reply_markup=service_kb)
+    await message.answer("Выберите робот / объект:", reply_markup=kb)
+
 
 @dp.message(Form.menu, Text("Срок действия подписки"))
 async def process_subscription(message: Message, state: FSMContext):
-    await message.answer("Срок действия подписки: пока не реализован. Скоро добавим!", reply_markup=main_menu_kb)
+    await message.answer(
+        "Функция «Срок действия подписки» пока в разработке.\n"
+        "Скоро появится!",
+        reply_markup=main_menu_kb
+    )
 
-@dp.message(Form.menu, Text("Назад в меню"))
-async def back_to_menu(message: Message, state: FSMContext):
+
+@dp.message(Form.menu, Text(["Назад в меню", "В главное меню"]))
+async def back_to_main_menu(message: Message, state: FSMContext):
     await message.answer("Главное меню:", reply_markup=main_menu_kb)
 
+
 @dp.message(Form.menu)
-async def unknown_menu(message: Message, state: FSMContext):
-    await message.answer("Выберите действие из меню:", reply_markup=main_menu_kb)
+async def unknown_in_menu(message: Message, state: FSMContext):
+    await message.answer("Пожалуйста, выберите действие из меню:", reply_markup=main_menu_kb)
+
+
+@dp.message(Text("Ввести другой номер"))
+async def retry_phone(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Введите новый номер телефона (+7...):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await state.set_state(Form.phone)
+
 
 async def main():
-    print("Бот запущен! Используем polling.")
+    print("KubonSupportBot запущен (aiogram 3.x + OKDesk)")
     await dp.start_polling(bot, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
