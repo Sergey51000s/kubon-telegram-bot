@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart, Text
@@ -66,12 +65,17 @@ async def get_contact_by_phone(phone: str):
             try:
                 data = await resp.json()
 
-                contacts = data.get("contacts", [])
-                if not contacts and isinstance(data, dict) and "id" in data:
-                    contacts = [data]
+                # Обрабатываем оба варианта: массив или одиночный объект
+                if isinstance(data, list):
+                    contacts = data
+                elif isinstance(data, dict):
+                    contacts = data.get("contacts", [])
+                    if not contacts and "id" in data:
+                        contacts = [data]
+                else:
+                    contacts = []
 
-                logging.info(f"Найдено контактов после фикса: {len(contacts)}")
-
+                logging.info(f"Найдено контактов: {len(contacts)}")
                 if not contacts:
                     return None
 
@@ -96,16 +100,15 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # Если ответ — список, используем его напрямую
+                # OKDesk возвращает список напрямую — берём его
                 if isinstance(data, list):
                     objects = data
-                # Если словарь — берём ключ "maintenance_entities" или пустой список
                 elif isinstance(data, dict):
                     objects = data.get("maintenance_entities", []) or []
                 else:
                     objects = []
 
-                logging.info(f"Найдено объектов после фикса: {len(objects)}")
+                logging.info(f"Найдено объектов: {len(objects)}")
                 return objects
             except Exception as e:
                 logging.error(f"Ошибка парсинга объектов: {e}")
@@ -162,8 +165,8 @@ async def process_service(message: Message, state: FSMContext):
     # Клавиатура с отдельными кнопками для каждого робота
     service_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=1)
     for obj in objects:
-        name = obj.get('name', 'Без названия')
-        serial = obj.get('serial_number', 'не указан')
+        name = obj.get('name', 'Без названия') if isinstance(obj, dict) else "Без названия"
+        serial = obj.get('serial_number', 'не указан') if isinstance(obj, dict) else "не указан"
         button_text = f"{name} (№ {serial})"
         service_kb.add(KeyboardButton(text=button_text))
 
