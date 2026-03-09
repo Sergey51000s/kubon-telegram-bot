@@ -17,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"  # Текущий рабочий ключ
+OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -88,9 +88,10 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # OKDesk возвращает список напрямую (list), без ключа
+                # Если ответ — список (list) — используем его напрямую
                 if isinstance(data, list):
                     objects = data
+                # Если словарь — берём ключ "maintenance_entities" или пустой список
                 elif isinstance(data, dict):
                     objects = data.get("maintenance_entities", []) or []
                 else:
