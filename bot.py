@@ -17,7 +17,7 @@ import aiohttp
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"
+OKDESK_API_TOKEN = "80ce0681fc84a44a7ca11450b24587b9fa367fa8"  # Текущий рабочий ключ
 OKDESK_SUBDOMAIN = os.getenv("OKDESK_SUBDOMAIN") or "teken2027"
 
 if not TELEGRAM_TOKEN or not OKDESK_API_TOKEN or not OKDESK_SUBDOMAIN:
@@ -50,7 +50,7 @@ async def get_contact_by_phone(phone: str):
         async with session.get(f"{OKDESK_API_BASE}/contacts", params=params) as resp:
             logging.info(f"Статус: {resp.status}")
             text = await resp.text()
-            logging.info(f"Сырой ответ API: {text}")
+            logging.info(f"Сырой ответ контакта: {text}")
 
             if resp.status != 200:
                 return None
@@ -58,10 +58,7 @@ async def get_contact_by_phone(phone: str):
             try:
                 data = await resp.json()
 
-                # Вариант 1: массив contacts
                 contacts = data.get("contacts", [])
-
-                # Вариант 2: одиночный объект
                 if not contacts and isinstance(data, dict) and "id" in data:
                     contacts = [data]
 
@@ -72,7 +69,7 @@ async def get_contact_by_phone(phone: str):
 
                 return contacts[0]
             except Exception as e:
-                logging.error(f"Ошибка парсинга JSON: {e}")
+                logging.error(f"Ошибка парсинга контакта: {e}")
                 return None
 
 async def get_objects_by_company(company_id: int):
@@ -91,11 +88,11 @@ async def get_objects_by_company(company_id: int):
             try:
                 data = await resp.json()
 
-                # OKDesk возвращает список напрямую
+                # OKDesk возвращает список напрямую (list), без ключа
                 if isinstance(data, list):
                     objects = data
                 elif isinstance(data, dict):
-                    objects = data.get("maintenance_entities", [])
+                    objects = data.get("maintenance_entities", []) or []
                 else:
                     objects = []
 
