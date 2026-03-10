@@ -17,16 +17,12 @@ from aiogram.enums import ParseMode
 import aiohttp
 
 # ==================== НАСТРОЙКИ ====================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or "твой_токен_телеграм"
-AMO_SUBDOMAIN = "demon51000"
-AMO_TOKEN = os.getenv("AMO_ACCESS_TOKEN") or "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NzUzMWJlMjBhN2NkZDRiNDJjNGEzNDQwNzc5ZDY4ZDAyOWI3ZmQ2OTZiZDA3ZjhlNGIwYzM5MWQzOTU0YmJkMzFkMGI5OTBiYjdiM2FmIn0.eyJhdWQiOiJjNmVhZTYzZS00NGQyLTQzMDUtOTBhYy1iMDcwNmI4MzkxZDUiLCJqdGkiOiIxNDc1MzFiZTIwYTdjZGQ0YjQyYzRhMzQ0MDc3OWQ2OGQwMjliN2ZkNjk2YmQwN2Y4ZTRiMGMzOTFkMzk1NGJiZDMxZDBiOTkwYmI3YjNhZiIsImlhdCI6MTc3MzE1Mjg4MCwibmJmIjoxNzczMTUyODgwLCJleHAiOjE5MzA4NjcyMDAsInN1YiI6IjEzNDAxMjIyIiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyODU0ODY2LCJiYXNlX2RvbWFpbiI6ImFtb2NybS5ydSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiOGFlNmExNDctYWE0Zi00MjY0LTljYmYtNTVlZjYxNjllOTFjIiwiYXBpX2RvbWFpbiI6ImFwaS1iLmFtb2NybS5ydSJ9.ps68EjCRyO1ydy6OrTfiPn0mGvbmr-0Fyls-Z4-WOfiKIpMqGnnV8toEnO5pgIvnhuat_rgM4mOmPXS9Kx_rQCF8cw3o0heoHAUgSzpp4eThhszNrpZ9E0Fte5hMiw6prJcmFgjEqmG6h8LS4Pz-S0hH9T_XK6C9siJSyz66z5K_7WMdlSN_vQ2jAKRDuanUV6ecYIi3tuXsF74OaTp3mKjxUg7GaCfl3zk1kfm9CrHiTvOAXOTHEmAQuZmM97swjZVop2NN6WzKidRB2p0JSX9PaMIepe5lKuYJaVwtKRw0bYV_KEI6eQcsrwCnoOBLb94YXnKyWjVEMgQVp1gmCQ"  # ← твой токен
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+AMO_SUBDOMAIN = os.getenv("AMO_SUBDOMAIN") or "demon51000"
+AMO_TOKEN = os.getenv("AMO_ACCESS_TOKEN")
 
 AMO_PIPELINE_ID = 10684430  # твоя воронка "ТЕХОБСЛУЖИВАНИЕ"
-AMO_STATUS_ID = 10684431    # ← "Заявка" (попробуй, если не туда — подправим на 10684432 или реальный)
-
-if not TELEGRAM_TOKEN or not AMO_TOKEN:
-    print("КРИТИЧЕСКАЯ ОШИБКА: Не все переменные найдены!")
-    sys.exit(1)
+AMO_STATUS_ID = 10684431    # "Заявка" (подправь, если не то)
 
 AMO_API_BASE = f"https://{AMO_SUBDOMAIN}.amocrm.ru/api/v4"
 
@@ -36,8 +32,17 @@ dp = Dispatcher(storage=storage)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-class Form(StatesGroup):
+class Registration(StatesGroup):
+    fio = State()
+    inn = State()
     phone = State()
+    filial_name = State()
+    filial_city = State()
+    filial_street = State()
+    filial_building = State()
+    kkt_number = State()
+
+class Form(StatesGroup):
     menu = State()
     serial_input = State()
     issue_description = State()
@@ -45,7 +50,7 @@ class Form(StatesGroup):
     wait_attach = State()
 
 
-# Клавиатуры (оставь как в твоём боте)
+# Клавиатуры
 start_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="СТАРТ", request_contact=True)]], resize_keyboard=True)
 main_menu_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Обслуживание")]], resize_keyboard=True)
 back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад в меню")]], resize_keyboard=True)
@@ -54,18 +59,9 @@ attach_choice_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Да, п�
 done_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Готово, отправить заявку")]], resize_keyboard=True)
 
 
-def normalize_phone(raw: str) -> str:
-    digits = re.sub(r'[^0-9+]', '', raw.strip())
-    if digits.startswith('8'):
-        digits = '+7' + digits[1:]
-    if not digits.startswith('+'):
-        digits = '+7' + digits
-    return digits
-
-
-async def get_amo_contact_by_phone(phone: str):
+async def get_amo_contact_by_telegram_id(telegram_id: int):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
-    params = {"query": phone}
+    params = {"query": str(telegram_id)}
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{AMO_API_BASE}/contacts", headers=headers, params=params) as resp:
             if resp.status != 200:
@@ -78,56 +74,70 @@ async def get_amo_contact_by_phone(phone: str):
             return None
 
 
-async def create_amo_lead(contact_id: int, description: str, equipment_info: str):
+async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, filial_info: str):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}", "Content-Type": "application/json"}
     payload = [{
-        "name": "Заявка из Telegram-бота",
-        "pipeline_id": AMO_PIPELINE_ID,
-        "status_id": AMO_STATUS_ID,
-        "contacts": [{"id": contact_id}],
+        "name": fio,
         "custom_fields_values": [
-            {"field_code": "DESCRIPTION", "values": [{"value": description}]},
-            {"field_code": "SERIAL_NUMBER", "values": [{"value": equipment_info}]}
+            {"field_code": "INN", "values": [{"value": inn}]},
+            {"field_code": "PHONE", "values": [{"value": phone, "enum_code": "WORK"}]},
+            {"field_code": "TELEGRAM_ID", "values": [{"value": str(telegram_id)}]},
+            {"field_code": "FILIAL_INFO", "values": [{"value": filial_info}]}
         ]
     }]
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{AMO_API_BASE}/leads", json=payload, headers=headers) as resp:
+        async with session.post(f"{AMO_API_BASE}/contacts", json=payload, headers=headers) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
-                lead_id = data['_embedded']['leads'][0]['id']
-                logging.info(f"Создана сделка: {lead_id}")
-                return lead_id
+                contact_id = data['_embedded']['contacts'][0]['id']
+                logging.info(f"Создан контакт: {contact_id}")
+                return contact_id
             else:
                 text = await resp.text()
-                logging.error(f"Amo создание сделки ошибка: {resp.status} - {text}")
+                logging.error(f"Amo создание контакта ошибка: {resp.status} - {text}")
                 return None
 
 
-async def upload_file_to_amo_lead(lead_id: int, file_bytes: bytes, filename: str):
-    form = aiohttp.FormData()
-    form.add_field("file", file_bytes, filename=filename, content_type="image/jpeg")
-
-    headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
-
-    async with aiohttp.ClientSession() as session:
-        url = f"{AMO_API_BASE}/leads/{lead_id}/files"
-        async with session.post(url, data=form, headers=headers) as resp:
-            text = await resp.text()
-            logging.info(f"Amo загрузка файла: {resp.status} - {text}")
-            return resp.status in (200, 201)
-
-
-# ... (остальные функции бота — process_phone, process_serial, create_and_finish_issue и т.д. — оставь как в твоём текущем боте)
-
-# В create_and_finish_issue замени вызовы OkDesk на новые функции:
-# lead_id = await create_amo_lead(contact_id, description, equipment_info)
-# success = await upload_file_to_amo_lead(lead_id, content, filename)
-
-async def main():
-    print("KubonSupportBot запущен (aiogram 3.x + AmoCRM)")
-    await dp.start_polling(bot, drop_pending_updates=True)
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    telegram_id = message.from_user.id
+    contact = await get_amo_contact_by_telegram_id(telegram_id)
+    if contact:
+        fio = contact.get('name', 'Клиент')
+        await message.answer(f"Здравствуйте, <b>{fio}</b>!\n\nКакой у вас вопрос?", reply_markup=main_menu_kb)
+        await state.update_data(contact=contact)
+        await state.set_state(Form.menu)
+    else:
+        await message.answer("Здравствуйте! Для начала зарегистрируйтесь.")
+        await message.answer("Введите ФИО:")
+        await state.set_state(Registration.fio)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# Хендлеры для регистрации
+@dp.message(Registration.fio)
+async def reg_fio(message: Message, state: FSMContext):
+    await state.update_data(fio=message.text)
+    await message.answer("Введите ИНН:")
+    await state.set_state(Registration.inn)
+
+# Аналогично для остальных полей регистрации (inn, phone, filial_name, city, street, building, kkt_number)
+# В конце регистрации:
+@dp.message(Registration.kkt_number)
+async def reg_finish(message: Message, state: FSMContext):
+    data = await state.get_data()
+    telegram_id = message.from_user.id
+    filial_info = f"Название: {data['filial_name']}, Город: {data['filial_city']}, Улица: {data['filial_street']}, Номер: {data['filial_building']}, ККТ: {message.text}"
+    contact_id = await create_amo_contact(data['fio'], data['inn'], data['phone'], telegram_id, filial_info)
+    if contact_id:
+        await message.answer("Регистрация завершена! Теперь вы авторизованы.")
+        await message.answer("Какой у вас вопрос?", reply_markup=main_menu_kb)
+        await state.update_data(contact={"id": contact_id})
+        await state.set_state(Form.menu)
+    else:
+        await message.answer("Ошибка регистрации. Попробуйте заново /start")
+
+# Остальные хендлеры (menu, serial, description, attach) — оставь как есть, только в create_and_finish_issue используй create_amo_lead
+
+# ... (полный код как раньше, с новыми функциями)
