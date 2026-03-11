@@ -22,7 +22,8 @@ AMO_SUBDOMAIN = os.getenv("AMO_SUBDOMAIN") or "demon51000"
 AMO_TOKEN = os.getenv("AMO_ACCESS_TOKEN")
 
 AMO_PIPELINE_ID = 10684430
-AMO_STATUS_ID = 10684431  # Заявка — подправь после теста
+AMO_STATUS_ID = 84194070  # Правильный id для "Заявка"
+AMO_RESPONSIBLE_USER_ID = 13401222  # Твой user_id из /account
 
 if not TELEGRAM_TOKEN or not AMO_TOKEN:
     print("ОШИБКА: TELEGRAM_TOKEN или AMO_ACCESS_TOKEN не найдены!")
@@ -83,6 +84,7 @@ async def get_amo_contact_by_telegram_id(telegram_id: int):
             data = await resp.json()
             contacts = data.get('_embedded', {}).get('contacts', [])
             for contact in contacts:
+                await asyncio.sleep(0.5)  # Пауза для rate limit
                 async with session.get(f"{AMO_API_BASE}/contacts/{contact['id']}/notes", headers=headers) as note_resp:
                     if note_resp.status == 200:
                         note_data = await note_resp.json()
@@ -99,8 +101,10 @@ async def get_amo_contact_by_telegram_id(telegram_id: int):
 async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, filial_name: str, filial_city: str, filial_street: str, filial_building: str):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}", "Content-Type": "application/json"}
     payload = [{
-        "name": fio
-        # Убрали custom_fields_values, чтобы избежать 403 на базовом тарифе
+        "name": fio,
+        "custom_fields_values": [
+            {"field_code": "PHONE", "values": [{"value": phone, "enum_code": "WORK"}]},
+        ]
     }]
 
     async with aiohttp.ClientSession() as session:
@@ -110,8 +114,7 @@ async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, f
             if resp.status in (200, 201):
                 data = await resp.json()
                 contact_id = data['_embedded']['contacts'][0]['id']
-                # Все данные в заметку (note)
-                note_text = f"Telegram ID: {telegram_id}\nИНН: {inn}\nТелефон: {phone}\nФилиал: {filial_name}\nГород: {filial_city}\nУлица: {filial_street}\nЗдание: {filial_building}"
+                note_text = f"Telegram ID: {telegram_id}\nИНН: {inn}\nФилиал: {filial_name}, {filial_city}, {filial_street}, {filial_building}"
                 await add_note_to_contact(contact_id, note_text)
                 logging.info(f"[create_contact] Контакт {contact_id} создан")
                 return contact_id
@@ -138,6 +141,7 @@ async def create_amo_lead(contact_id: int, description: str, serial: str):
         "name": f"Заявка по роботу {serial}",
         "pipeline_id": AMO_PIPELINE_ID,
         "status_id": AMO_STATUS_ID,
+        "responsible_user_id": AMO_RESPONSIBLE_USER_ID,
         "contacts": [{"id": contact_id}],
         "description": f"{description}\nСерийный номер: {serial}"
     }]
@@ -281,7 +285,6 @@ async def reg_filial_building(message: Message, state: FSMContext):
         data['filial_name'], data['filial_city'], data['filial_street'], message.text
     )
     if contact_id:
-        # Изменённое сообщение
         await message.answer("Данные на модерации, ваша тех поддержка будет активированна в течении 2х часов", reply_markup=main_menu_kb)
         await state.update_data(contact={"id": contact_id})
         await state.set_state(Form.menu)
@@ -408,7 +411,6 @@ async def back_to_menu(message: Message, state: FSMContext):
 
 # ────────────────────────────────────────────────
 # ТЕСТОВЫЙ ХЭНДЛЕР ДЛЯ ПРОВЕРКИ amoCRM API
-# Напиши боту команду /test_amo
 # ────────────────────────────────────────────────
 @dp.message(F.text == "/test_amo")
 async def test_amo(message: Message):
