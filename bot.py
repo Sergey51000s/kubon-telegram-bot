@@ -99,10 +99,8 @@ async def get_amo_contact_by_telegram_id(telegram_id: int):
 async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, filial_name: str, filial_city: str, filial_street: str, filial_building: str):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}", "Content-Type": "application/json"}
     payload = [{
-        "name": fio,
-        "custom_fields_values": [
-            {"field_code": "PHONE", "values": [{"value": phone, "enum_code": "WORK"}]},
-        ]
+        "name": fio
+        # Убрали custom_fields_values, чтобы избежать 403 на базовом тарифе
     }]
 
     async with aiohttp.ClientSession() as session:
@@ -112,7 +110,8 @@ async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, f
             if resp.status in (200, 201):
                 data = await resp.json()
                 contact_id = data['_embedded']['contacts'][0]['id']
-                note_text = f"Telegram ID: {telegram_id}\nИНН: {inn}\nФилиал: {filial_name}, {filial_city}, {filial_street}, {filial_building}"
+                # Все данные в заметку (note)
+                note_text = f"Telegram ID: {telegram_id}\nИНН: {inn}\nТелефон: {phone}\nФилиал: {filial_name}\nГород: {filial_city}\nУлица: {filial_street}\nЗдание: {filial_building}"
                 await add_note_to_contact(contact_id, note_text)
                 logging.info(f"[create_contact] Контакт {contact_id} создан")
                 return contact_id
@@ -282,7 +281,8 @@ async def reg_filial_building(message: Message, state: FSMContext):
         data['filial_name'], data['filial_city'], data['filial_street'], message.text
     )
     if contact_id:
-        await message.answer("Регистрация завершена! Ваш аккаунт на проверке. В ближайшее время всё будет готово.", reply_markup=main_menu_kb)
+        # Изменённое сообщение
+        await message.answer("Данные на модерации, ваша тех поддержка будет активированна в течении 2х часов", reply_markup=main_menu_kb)
         await state.update_data(contact={"id": contact_id})
         await state.set_state(Form.menu)
     else:
