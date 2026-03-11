@@ -406,6 +406,32 @@ async def back_to_menu(message: Message, state: FSMContext):
     await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
 
 
+# ────────────────────────────────────────────────
+# ТЕСТОВЫЙ ХЭНДЛЕР ДЛЯ ПРОВЕРКИ amoCRM API
+# Напиши боту команду /test_amo
+# ────────────────────────────────────────────────
+@dp.message(F.text == "/test_amo")
+async def test_amo(message: Message):
+    headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
+    url = f"{AMO_API_BASE}/account"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                short_text = text[:800] + "..." if len(text) > 800 else text
+                await message.answer(
+                    f"<b>Тест amoCRM API</b>\n\n"
+                    f"URL: {url}\n"
+                    f"Статус: {resp.status}\n\n"
+                    f"Ответ (первые 800 символов):\n<pre>{short_text}</pre>",
+                    parse_mode="HTML"
+                )
+                logging.info(f"[test_amo] {resp.status} - {text}")
+    except Exception as e:
+        await message.answer(f"Ошибка при запросе: {str(e)}")
+        logging.error(f"[test_amo] Exception: {str(e)}")
+
+
 async def main():
     print("KubonSupportBot запущен (aiogram 3.x + AmoCRM)")
     await dp.start_polling(bot, drop_pending_updates=True)
