@@ -207,29 +207,58 @@ async def cmd_start(message: Message, state: FSMContext):
         await state.set_state(Registration.fio)
 
 
-# === УНИВЕРСАЛЬНЫЙ НАЗАД ===
+# === УНИВЕРСАЛЬНЫЙ НАЗАД С ОТКАТОМ СОСТОЯНИЙ ===
 @dp.message(F.text == "Назад")
 async def universal_back(message: Message, state: FSMContext):
     current_state = await state.get_state()
+
     if current_state == Form.issue_description.state:
-        # Возврат к выбору робота
         await message.answer("Вернулись к выбору робота", reply_markup=back_kb)
-        await process_service(message, state)  # Перезапускаем выбор робота
-    elif current_state == Form.robot_select.state:
-        # Возврат в меню
+        await process_service(message, state)  # Возврат к списку роботов
+        return
+
+    if current_state == Form.robot_select.state:
         await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
         await state.set_state(Form.menu)
-    elif current_state == Form.ask_attach.state or current_state == Form.wait_attach.state:
-        # Возврат к описанию проблемы
+        return
+
+    if current_state == Form.ask_attach.state or current_state == Form.wait_attach.state:
         await message.answer("Вернулись к описанию проблемы", reply_markup=back_kb)
         await state.set_state(Form.issue_description)
-    elif current_state and current_state.startswith('Registration'):
-        # Для регистрации — откат на предыдущий шаг (простой вариант)
+        return
+
+    if current_state and current_state.startswith('Registration'):
+        # Откат в регистрации
+        prev_states = {
+            Registration.inn.state: Registration.fio.state,
+            Registration.phone.state: Registration.inn.state,
+            Registration.filial_name.state: Registration.phone.state,
+            Registration.filial_city.state: Registration.filial_name.state,
+            Registration.filial_street.state: Registration.filial_city.state,
+            Registration.filial_building.state: Registration.filial_street.state,
+        }
+        prev_state = prev_states.get(current_state, Registration.fio.state)
+        await state.set_state(prev_state)
         await message.answer("Вернулись к предыдущему шагу.", reply_markup=back_kb)
-        await state.set_state(Registration.fio if current_state == Registration.fio.state else current_state)
-    else:
-        await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
-        await state.set_state(Form.menu)
+        # Повторяем вопрос предыдущего шага
+        if prev_state == Registration.fio.state:
+            await message.answer("Введите ФИО:", reply_markup=back_kb)
+        elif prev_state == Registration.inn.state:
+            await message.answer("Введите ИНН (10 или 12 цифр):", reply_markup=back_kb)
+        elif prev_state == Registration.phone.state:
+            await message.answer("Введите номер телефона:", reply_markup=back_kb)
+        elif prev_state == Registration.filial_name.state:
+            await message.answer("Введите название филиала:", reply_markup=back_kb)
+        elif prev_state == Registration.filial_city.state:
+            await message.answer("Введите город филиала:", reply_markup=back_kb)
+        elif prev_state == Registration.filial_street.state:
+            await message.answer("Введите улицу филиала:", reply_markup=back_kb)
+        elif prev_state == Registration.filial_building.state:
+            await message.answer("Введите номер здания филиала:", reply_markup=back_kb)
+        return
+
+    await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
+    await state.set_state(Form.menu)
 
 
 @dp.message(Form.menu, F.text == "Обслуживание")
@@ -301,14 +330,68 @@ async def check_status(message: Message, state: FSMContext):
         )
 
 
-# === РЕГИСТРАЦИЯ ===
+# === РЕГИСТРАЦИЯ (все шаги) ===
 @dp.message(Registration.fio)
 async def reg_fio(message: Message, state: FSMContext):
     await state.update_data(fio=message.text)
     await message.answer("Введите ИНН (10 или 12 цифр):", reply_markup=back_kb)
     await state.set_state(Registration.inn)
 
-# (все остальные reg_inn, reg_phone и т.д. — как в твоём рабочем коде, они не менялись)
+
+@dp.message(Registration.inn)
+async def reg_inn(message: Message, state: FSMContext):
+    inn = message.text.strip()
+    if len(inn) not in (10, 12) or not inn.isdigit():
+        await message.answer("ИНН должен состоять из 10 или 12 цифр. Попробуйте ещё раз:", reply_markup=back_kb)
+        return
+    await state.update_data(inn=inn)
+    await message.answer("Введите номер телефона:", reply_markup=back_kb)
+    await state.set_state(Registration.phone)
+
+
+@dp.message(Registration.phone)
+async def reg_phone(message: Message, state: FSMContext):
+    phone = normalize_phone(message.text)
+    await state.update_data(phone=phone)
+    await message.answer("Введите название филиала:", reply_markup=back_kb)
+    await state.set_state(Registration.filial_name)
+
+
+@dp.message(Registration.filial_name)
+async def reg_filial_name(message: Message, state: FSMContext):
+    await state.update_data(filial_name=message.text)
+    await message.answer("Введите город филиала:", reply_markup=back_kb)
+    await state.set_state(Registration.filial_city)
+
+
+@dp.message(Registration.filial_city)
+async def reg_filial_city(message: Message, state: FSMContext):
+    await state.update_data(filial_city=message.text)
+    await message.answer("Введите улицу филиала:", reply_markup=back_kb)
+    await state.set_state(Registration.filial_street)
+
+
+@dp.message(Registration.filial_street)
+async def reg_filial_street(message: Message, state: FSMContext):
+    await state.update_data(filial_street=message.text)
+    await message.answer("Введите номер здания филиала:", reply_markup=back_kb)
+    await state.set_state(Registration.filial_building)
+
+
+@dp.message(Registration.filial_building)
+async def reg_filial_building(message: Message, state: FSMContext):
+    data = await state.get_data()
+    telegram_id = message.from_user.id
+    contact_id = await create_amo_contact(
+        data['fio'], data['inn'], data['phone'], telegram_id,
+        data['filial_name'], data['filial_city'], data['filial_street'], message.text
+    )
+    if contact_id:
+        await message.answer("Данные на модерации, ваша тех поддержка будет активированна в течении 2х часов", reply_markup=main_menu_kb)
+        await state.update_data(contact={"id": contact_id})
+        await state.set_state(Form.menu)
+    else:
+        await message.answer("Ошибка регистрации. Попробуйте позже /start")
 
 
 # === СОЗДАНИЕ ЗАЯВКИ ===
@@ -383,24 +466,19 @@ async def process_finish(message: Message, state: FSMContext):
         except Exception as e:
             logging.error(f"Ошибка загрузки файла {file_id}: {e}")
 
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Создать ещё одну заявку")],
-        [KeyboardButton(text="Вернуться в меню")]
-    ], resize_keyboard=True)
-
     await message.answer(
         f"✅ Заявка создана!\n"
         f"Сделка №{lead_id}\n"
         f"Прикреплено файлов: {uploaded}\n\n"
         f"Что дальше?",
-        reply_markup=kb
+        reply_markup=new_request_kb
     )
-    # Состояние остаётся в menu, контакт сохранён
+    # Сохраняем состояние меню, контакт остаётся
     await state.set_state(Form.menu)
 
 
-@dp.message(Form.menu, F.text == "Создать ещё одну заявку")
-async def new_request(message: Message, state: FSMContext):
+@dp.message(Form.menu, F.text.in_(["Создать ещё одну заявку", "Обслуживание"]))
+async def start_new_request(message: Message, state: FSMContext):
     await process_service(message, state)
 
 
@@ -425,7 +503,7 @@ async def test_amo(message: Message):
 
 
 async def main():
-    print("KubonSupportBot запущен (с исправленным 'Назад' и сохранением контакта)")
+    print("KubonSupportBot запущен (с полным откатом 'Назад' и сохранением состояния)")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 
