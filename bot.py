@@ -116,6 +116,7 @@ async def get_client_robots(contact_id: int):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{AMO_API_BASE}/contacts/{contact_id}", headers=headers) as resp:
             if resp.status != 200:
+                logging.error(f"[get_robots] Ошибка получения контакта: {resp.status}")
                 return []
             data = await resp.json()
             custom_fields = data.get('custom_fields_values', [])
@@ -181,12 +182,13 @@ async def create_amo_lead(contact_id: int, description: str, serial: str):
 
 async def upload_file_to_amo_lead(lead_id: int, file_bytes: bytes, filename: str):
     form = aiohttp.FormData()
-    form.add_field("file", file_bytes, filename=filename, content_type="image/jpeg")
+    form.add_field("file", file_bytes, filename=filename, content_type="application/octet-stream")
     headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
     async with aiohttp.ClientSession() as session:
         url = f"{AMO_API_BASE}/leads/{lead_id}/files"
         async with session.post(url, data=form, headers=headers) as resp:
-            logging.info(f"[upload_file] {resp.status} - {await resp.text()}")
+            text = await resp.text()
+            logging.info(f"[upload_file] {resp.status} - {text}")
             return resp.status in (200, 201)
 
 
@@ -207,14 +209,13 @@ async def cmd_start(message: Message, state: FSMContext):
         await state.set_state(Registration.fio)
 
 
-# === УНИВЕРСАЛЬНЫЙ НАЗАД С ОТКАТОМ СОСТОЯНИЙ ===
 @dp.message(F.text == "Назад")
 async def universal_back(message: Message, state: FSMContext):
     current_state = await state.get_state()
 
     if current_state == Form.issue_description.state:
         await message.answer("Вернулись к выбору робота", reply_markup=back_kb)
-        await process_service(message, state)  # Возврат к списку роботов
+        await process_service(message, state)
         return
 
     if current_state == Form.robot_select.state:
@@ -228,33 +229,17 @@ async def universal_back(message: Message, state: FSMContext):
         return
 
     if current_state and current_state.startswith('Registration'):
-        # Откат в регистрации
         prev_states = {
-            Registration.inn.state: Registration.fio.state,
-            Registration.phone.state: Registration.inn.state,
-            Registration.filial_name.state: Registration.phone.state,
-            Registration.filial_city.state: Registration.filial_name.state,
-            Registration.filial_street.state: Registration.filial_city.state,
-            Registration.filial_building.state: Registration.filial_street.state,
+            Registration.inn.state: (Registration.fio.state, "Введите ФИО:"),
+            Registration.phone.state: (Registration.inn.state, "Введите ИНН (10 или 12 цифр):"),
+            Registration.filial_name.state: (Registration.phone.state, "Введите номер телефона:"),
+            Registration.filial_city.state: (Registration.filial_name.state, "Введите название филиала:"),
+            Registration.filial_street.state: (Registration.filial_city.state, "Введите город филиала:"),
+            Registration.filial_building.state: (Registration.filial_street.state, "Введите улицу филиала:"),
         }
-        prev_state = prev_states.get(current_state, Registration.fio.state)
+        prev_state, prev_question = prev_states.get(current_state, (Registration.fio.state, "Введите ФИО:"))
         await state.set_state(prev_state)
-        await message.answer("Вернулись к предыдущему шагу.", reply_markup=back_kb)
-        # Повторяем вопрос предыдущего шага
-        if prev_state == Registration.fio.state:
-            await message.answer("Введите ФИО:", reply_markup=back_kb)
-        elif prev_state == Registration.inn.state:
-            await message.answer("Введите ИНН (10 или 12 цифр):", reply_markup=back_kb)
-        elif prev_state == Registration.phone.state:
-            await message.answer("Введите номер телефона:", reply_markup=back_kb)
-        elif prev_state == Registration.filial_name.state:
-            await message.answer("Введите название филиала:", reply_markup=back_kb)
-        elif prev_state == Registration.filial_city.state:
-            await message.answer("Введите город филиала:", reply_markup=back_kb)
-        elif prev_state == Registration.filial_street.state:
-            await message.answer("Введите улицу филиала:", reply_markup=back_kb)
-        elif prev_state == Registration.filial_building.state:
-            await message.answer("Введите номер здания филиала:", reply_markup=back_kb)
+        await message.answer(f"Вернулись к предыдущему шагу.\n{prev_question}", reply_markup=back_kb)
         return
 
     await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
@@ -420,18 +405,37 @@ async def ask_attach_no(message: Message, state: FSMContext):
 @dp.message(Form.wait_attach, F.photo | F.document | F.video | F.text == "Готово, отправить заявку")
 async def process_wait_attach(message: Message, state: FSMContext):
     data = await state.get_data()
-    attachments = data.get("attachments", [])
+    attachments = data.get("attachments", []) or []
+
     if message.photo:
-        attachments.append(message.photo[-1].file_id)
+        file_id = message.photo[-1].file_id
+        mime = "image/jpeg"
+        ext = ".jpg"
+        filename = f"problem_photo_{len(attachments) + 1}{ext}"
+        attachments.append((file_id, mime, filename))
         await message.answer("Фото добавлено. Можно ещё или «Готово»:", reply_markup=done_kb)
+
     elif message.document:
-        attachments.append(message.document.file_id)
+        file_id = message.document.file_id
+        mime = message.document.mime_type or "application/octet-stream"
+        orig_name = message.document.file_name or f"document_{len(attachments) + 1}"
+        ext = os.path.splitext(orig_name)[1] or ".bin"
+        filename = orig_name
+        attachments.append((file_id, mime, filename))
         await message.answer("Документ добавлен. Можно ещё или «Готово»:", reply_markup=done_kb)
+
     elif message.video:
-        attachments.append(message.video.file_id)
+        file_id = message.video.file_id
+        mime = "video/mp4"
+        ext = ".mp4"
+        filename = f"problem_video_{len(attachments) + 1}{ext}"
+        attachments.append((file_id, mime, filename))
         await message.answer("Видео добавлено. Можно ещё или «Готово»:", reply_markup=done_kb)
+
     elif message.text == "Готово, отправить заявку":
         await process_finish(message, state)
+        return
+
     await state.update_data(attachments=attachments)
 
 
@@ -444,36 +448,47 @@ async def process_finish(message: Message, state: FSMContext):
 
     contact_id = contact["id"]
     serial = data.get("serial_number", "не указан")
-    description = data.get("issue_description", "без описания")
-    attachments = data.get("attachments", [])
+    description = data.get("issue_description", "").strip()
+    attachments = data.get("attachments", []) or []
 
-    lead_id = await create_amo_lead(contact_id, description, serial)
+    full_description = f"Проблема: {description}\nСерийный номер: {serial}"
+
+    lead_id = await create_amo_lead(contact_id, full_description, serial)
     if not lead_id:
         await message.answer("Не удалось создать заявку. Попробуйте позже.")
         return
 
     uploaded = 0
-    for file_id in attachments:
+    for att in attachments:
+        file_id, mime, filename = att
         try:
             file = await bot.get_file(file_id)
             bytes_io = io.BytesIO()
             await bot.download_file(file.file_path, bytes_io)
             bytes_io.seek(0)
-            filename = f"attach_{uploaded + 1}.jpg" if file.photo else "attach_file"
+
             success = await upload_file_to_amo_lead(lead_id, bytes_io.read(), filename)
             if success:
                 uploaded += 1
+                logging.info(f"Файл {filename} успешно загружен в сделку {lead_id}")
+            else:
+                logging.warning(f"Файл {filename} не загружен (amo вернул не 200)")
         except Exception as e:
-            logging.error(f"Ошибка загрузки файла {file_id}: {e}")
+            logging.error(f"Ошибка загрузки файла {file_id} ({filename}): {e}")
+
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="Создать ещё одну заявку")],
+        [KeyboardButton(text="Вернуться в меню")]
+    ], resize_keyboard=True)
 
     await message.answer(
         f"✅ Заявка создана!\n"
         f"Сделка №{lead_id}\n"
+        f"Описание: {description}\n"
         f"Прикреплено файлов: {uploaded}\n\n"
         f"Что дальше?",
-        reply_markup=new_request_kb
+        reply_markup=kb
     )
-    # Сохраняем состояние меню, контакт остаётся
     await state.set_state(Form.menu)
 
 
@@ -503,7 +518,7 @@ async def test_amo(message: Message):
 
 
 async def main():
-    print("KubonSupportBot запущен (с полным откатом 'Назад' и сохранением состояния)")
+    print("KubonSupportBot запущен (финальная версия с исправленным 'Назад', сохранением контакта и описанием в заявке)")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 
