@@ -25,7 +25,6 @@ AMO_PIPELINE_ID = 10684430
 AMO_STATUS_ID = 84194070
 AMO_RESPONSIBLE_USER_ID = 13401222
 
-# ID полей серийных номеров роботов (6 штук)
 AMO_ROBOT_FIELDS = [1401730, 1404610, 1404612, 1404614, 1404616, 1404666]
 
 if not TELEGRAM_TOKEN or not AMO_TOKEN:
@@ -120,7 +119,7 @@ async def get_client_robots(contact_id: int):
                         serial = val.get('value', '').strip()
                         if serial:
                             robots.append(serial)
-    return list(set(robots))  # Убираем возможные дубликаты
+    return list(set(robots))  # Убираем дубликаты
 
 
 async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, filial_name: str, filial_city: str, filial_street: str, filial_building: str):
@@ -202,13 +201,12 @@ async def cmd_start(message: Message, state: FSMContext):
         await state.set_state(Registration.fio)
 
 
-# === УНИВЕРСАЛЬНЫЙ НАЗАД ===
 @dp.message(F.text == "Назад")
 async def universal_back(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state and current_state.startswith('Registration'):
         await message.answer("Вернулись к предыдущему шагу.", reply_markup=back_kb)
-        # Простой откат — можно улучшить, но пока работает
+        # Откатываем на шаг назад (можно сделать точнее, но пока достаточно)
         await state.set_state(Registration.fio if current_state == Registration.fio.state else current_state)
     else:
         await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
@@ -225,18 +223,21 @@ async def process_service(message: Message, state: FSMContext):
 
     robots = await get_client_robots(contact["id"])
 
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True, row_width=2)  # Обязательно keyboard=[]
+
     if not robots:
-        kb.add(KeyboardButton(text="Назад"))
+        kb.keyboard.append([KeyboardButton(text="Назад")])
         await message.answer(
-            "По какому роботу вопрос?\n\nВаши роботы ещё не добавлены.\nМенеджер сделает это после проверки.",
+            "По какому роботу вопрос?\n\n"
+            "Ваши роботы ещё не добавлены в систему.\n"
+            "Менеджер сделает это в ближайшее время после проверки.",
             reply_markup=kb
         )
         return
 
     for robot in robots:
-        kb.add(KeyboardButton(text=robot))
-    kb.add(KeyboardButton(text="Назад"))
+        kb.keyboard.append([KeyboardButton(text=robot)])
+    kb.keyboard.append([KeyboardButton(text="Назад")])
 
     await message.answer("По какому роботу вопрос?", reply_markup=kb)
     await state.set_state(Form.robot_select)
@@ -350,7 +351,7 @@ async def reg_filial_building(message: Message, state: FSMContext):
         await message.answer("Ошибка регистрации. Попробуйте позже /start")
 
 
-# === СОЗДАНИЕ ЗАЯВКИ (все как было) ===
+# === СОЗДАНИЕ ЗАЯВКИ ===
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
     desc = message.text.strip()
@@ -454,7 +455,7 @@ async def test_amo(message: Message):
 
 
 async def main():
-    print("KubonSupportBot запущен (полная версия с регистрацией, выбором робота и проверкой статуса)")
+    print("KubonSupportBot запущен (полная версия с исправленной клавиатурой)")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 
