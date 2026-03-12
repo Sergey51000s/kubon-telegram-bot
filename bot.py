@@ -109,7 +109,6 @@ async def get_client_robots(contact_id: int):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{AMO_API_BASE}/contacts/{contact_id}", headers=headers) as resp:
             if resp.status != 200:
-                logging.error(f"[get_robots] Ошибка получения контакта: {resp.status} - {await resp.text()}")
                 return []
             data = await resp.json()
             custom_fields = data.get('custom_fields_values', [])
@@ -119,7 +118,7 @@ async def get_client_robots(contact_id: int):
                         serial = val.get('value', '').strip()
                         if serial:
                             robots.append(serial)
-    return list(set(robots))  # Убираем дубликаты
+    return list(set(robots))
 
 
 async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, filial_name: str, filial_city: str, filial_street: str, filial_building: str):
@@ -203,13 +202,11 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @dp.message(F.text == "Назад")
 async def universal_back(message: Message, state: FSMContext):
+    await message.answer("Вернулись назад", reply_markup=back_kb)
     current_state = await state.get_state()
     if current_state and current_state.startswith('Registration'):
-        await message.answer("Вернулись к предыдущему шагу.", reply_markup=back_kb)
-        # Откатываем на шаг назад (можно сделать точнее, но пока достаточно)
-        await state.set_state(Registration.fio if current_state == Registration.fio.state else current_state)
+        await state.set_state(Registration.fio)
     else:
-        await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
         await state.set_state(Form.menu)
 
 
@@ -223,16 +220,11 @@ async def process_service(message: Message, state: FSMContext):
 
     robots = await get_client_robots(contact["id"])
 
-    kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True, row_width=2)  # Обязательно keyboard=[]
+    kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True, row_width=2)
 
     if not robots:
         kb.keyboard.append([KeyboardButton(text="Назад")])
-        await message.answer(
-            "По какому роботу вопрос?\n\n"
-            "Ваши роботы ещё не добавлены в систему.\n"
-            "Менеджер сделает это в ближайшее время после проверки.",
-            reply_markup=kb
-        )
+        await message.answer("По какому роботу вопрос?\n\nВаши роботы ещё не добавлены.\nМенеджер сделает это после проверки.", reply_markup=kb)
         return
 
     for robot in robots:
@@ -287,13 +279,12 @@ async def check_status(message: Message, state: FSMContext):
         )
 
 
-# === РЕГИСТРАЦИЯ (все шаги полностью) ===
+# === РЕГИСТРАЦИЯ (все шаги) ===
 @dp.message(Registration.fio)
 async def reg_fio(message: Message, state: FSMContext):
     await state.update_data(fio=message.text)
     await message.answer("Введите ИНН (10 или 12 цифр):", reply_markup=back_kb)
     await state.set_state(Registration.inn)
-
 
 @dp.message(Registration.inn)
 async def reg_inn(message: Message, state: FSMContext):
@@ -305,7 +296,6 @@ async def reg_inn(message: Message, state: FSMContext):
     await message.answer("Введите номер телефона:", reply_markup=back_kb)
     await state.set_state(Registration.phone)
 
-
 @dp.message(Registration.phone)
 async def reg_phone(message: Message, state: FSMContext):
     phone = normalize_phone(message.text)
@@ -313,13 +303,11 @@ async def reg_phone(message: Message, state: FSMContext):
     await message.answer("Введите название филиала:", reply_markup=back_kb)
     await state.set_state(Registration.filial_name)
 
-
 @dp.message(Registration.filial_name)
 async def reg_filial_name(message: Message, state: FSMContext):
     await state.update_data(filial_name=message.text)
     await message.answer("Введите город филиала:", reply_markup=back_kb)
     await state.set_state(Registration.filial_city)
-
 
 @dp.message(Registration.filial_city)
 async def reg_filial_city(message: Message, state: FSMContext):
@@ -327,13 +315,11 @@ async def reg_filial_city(message: Message, state: FSMContext):
     await message.answer("Введите улицу филиала:", reply_markup=back_kb)
     await state.set_state(Registration.filial_street)
 
-
 @dp.message(Registration.filial_street)
 async def reg_filial_street(message: Message, state: FSMContext):
     await state.update_data(filial_street=message.text)
     await message.answer("Введите номер здания филиала:", reply_markup=back_kb)
     await state.set_state(Registration.filial_building)
-
 
 @dp.message(Registration.filial_building)
 async def reg_filial_building(message: Message, state: FSMContext):
@@ -429,13 +415,12 @@ async def process_finish(message: Message, state: FSMContext):
         f"Прикреплено файлов: {uploaded}",
         reply_markup=main_menu_kb
     )
-    await state.clear()
+    # Важно: НЕ очищаем состояние полностью, только возвращаем в меню
     await state.set_state(Form.menu)
 
 
 @dp.message(F.text == "Назад в меню")
 async def back_to_menu(message: Message, state: FSMContext):
-    await state.clear()
     await state.set_state(Form.menu)
     await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
 
@@ -455,7 +440,7 @@ async def test_amo(message: Message):
 
 
 async def main():
-    print("KubonSupportBot запущен (полная версия с исправленной клавиатурой)")
+    print("KubonSupportBot запущен (финальная версия)")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 
