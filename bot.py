@@ -10,7 +10,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ContentType
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -39,6 +39,8 @@ dp = Dispatcher(storage=storage)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
+
+# ==================== СОСТОЯНИЯ ====================
 class Registration(StatesGroup):
     fio = State()
     inn = State()
@@ -47,6 +49,7 @@ class Registration(StatesGroup):
     filial_city = State()
     filial_street = State()
     filial_building = State()
+
 
 class Form(StatesGroup):
     menu = State()
@@ -59,25 +62,31 @@ class Form(StatesGroup):
 
 # ==================== КЛАВИАТУРЫ ====================
 start_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="СТАРТ", request_contact=True)]], resize_keyboard=True)
+
 main_menu_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Обслуживание")],
     [KeyboardButton(text="Проверить статус")]
 ], resize_keyboard=True)
+
 back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Назад")]], resize_keyboard=True)
+
 attach_choice_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Да, прикрепить фото/видео")],
     [KeyboardButton(text="Нет, создать заявку без файлов")]
 ], resize_keyboard=True)
+
 done_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Готово, отправить заявку")],
     [KeyboardButton(text="Назад")]
 ], resize_keyboard=True)
+
 new_request_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="Создать ещё одну заявку")],
     [KeyboardButton(text="Вернуться в меню")]
 ], resize_keyboard=True)
 
 
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def normalize_phone(raw: str) -> str:
     digits = re.sub(r'[^0-9+]', '', raw.strip())
     if digits.startswith('8'):
@@ -90,9 +99,9 @@ def normalize_phone(raw: str) -> str:
 async def get_amo_contact_by_telegram_id(telegram_id: int):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{AMO_API_BASE}/contacts", headers=headers) as resp:
+        async with session.get(f"{AMO_API_BASE}/contacts", headers=headers, params={"limit": 50}) as resp:
             if resp.status != 200:
-                logging.error(f"[get_contact] Ошибка /contacts: {resp.status} - {await resp.text()}")
+                logging.error(f"[get_contact] Ошибка: {resp.status}")
                 return None
             data = await resp.json()
             contacts = data.get('_embedded', {}).get('contacts', [])
@@ -100,13 +109,10 @@ async def get_amo_contact_by_telegram_id(telegram_id: int):
                 async with session.get(f"{AMO_API_BASE}/contacts/{contact['id']}/notes", headers=headers) as note_resp:
                     if note_resp.status == 200:
                         note_data = await note_resp.json()
-                        notes = note_data.get('_embedded', {}).get('notes', [])
-                        for note in notes:
+                        for note in note_data.get('_embedded', {}).get('notes', []):
                             text = note.get('params', {}).get('text', '')
                             if f"Telegram ID: {telegram_id}" in text:
-                                logging.info(f"[get_contact] Найден контакт {contact['id']}")
                                 return contact
-    logging.info(f"[get_contact] Контакт с Telegram ID {telegram_id} не найден")
     return None
 
 
@@ -116,11 +122,9 @@ async def get_client_robots(contact_id: int):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{AMO_API_BASE}/contacts/{contact_id}", headers=headers) as resp:
             if resp.status != 200:
-                logging.error(f"[get_robots] Ошибка получения контакта: {resp.status}")
                 return []
             data = await resp.json()
-            custom_fields = data.get('custom_fields_values', [])
-            for field in custom_fields:
+            for field in data.get('custom_fields_values', []):
                 if field.get('field_id') in AMO_ROBOT_FIELDS:
                     for val in field.get('values', []):
                         serial = val.get('value', '').strip()
@@ -140,25 +144,20 @@ async def create_amo_contact(fio: str, inn: str, phone: str, telegram_id: int, f
 
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{AMO_API_BASE}/contacts", json=payload, headers=headers) as resp:
-            text = await resp.text()
-            logging.info(f"[create_contact] Ответ: {resp.status} - {text}")
             if resp.status in (200, 201):
                 data = await resp.json()
                 contact_id = data['_embedded']['contacts'][0]['id']
                 note_text = f"Telegram ID: {telegram_id}\nИНН: {inn}\nФилиал: {filial_name}, {filial_city}, {filial_street}, {filial_building}"
                 await add_note_to_contact(contact_id, note_text)
-                logging.info(f"[create_contact] Контакт {contact_id} создан")
                 return contact_id
-            return None
+    return None
 
 
 async def add_note_to_contact(contact_id: int, text: str):
     headers = {"Authorization": f"Bearer {AMO_TOKEN}", "Content-Type": "application/json"}
     payload = [{"note_type": "common", "params": {"text": text}}]
     async with aiohttp.ClientSession() as session:
-        url = f"{AMO_API_BASE}/contacts/{contact_id}/notes"
-        async with session.post(url, json=payload, headers=headers) as resp:
-            logging.info(f"[add_note] {resp.status} - {await resp.text()}")
+        await session.post(f"{AMO_API_BASE}/contacts/{contact_id}/notes", json=payload, headers=headers)
 
 
 async def create_amo_lead(contact_id: int, description: str, serial: str):
@@ -173,8 +172,6 @@ async def create_amo_lead(contact_id: int, description: str, serial: str):
     }]
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{AMO_API_BASE}/leads", json=payload, headers=headers) as resp:
-            text = await resp.text()
-            logging.info(f"[create_lead] Ответ: {resp.status} - {text}")
             if resp.status in (200, 201):
                 return (await resp.json())['_embedded']['leads'][0]['id']
     return None
@@ -185,10 +182,7 @@ async def upload_file_to_amo_lead(lead_id: int, file_bytes: bytes, filename: str
     form.add_field("file", file_bytes, filename=filename, content_type="application/octet-stream")
     headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
     async with aiohttp.ClientSession() as session:
-        url = f"{AMO_API_BASE}/leads/{lead_id}/files"
-        async with session.post(url, data=form, headers=headers) as resp:
-            text = await resp.text()
-            logging.info(f"[upload_file] {resp.status} - {text}")
+        async with session.post(f"{AMO_API_BASE}/leads/{lead_id}/files", data=form, headers=headers) as resp:
             return resp.status in (200, 201)
 
 
@@ -198,54 +192,38 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     telegram_id = message.from_user.id
     contact = await get_amo_contact_by_telegram_id(telegram_id)
+
     if contact:
         fio = contact.get('name', 'Клиент')
         await message.answer(f"Здравствуйте, <b>{fio}</b>!\n\nЧто делаем?", reply_markup=main_menu_kb)
         await state.update_data(contact=contact)
         await state.set_state(Form.menu)
     else:
-        await message.answer("Здравствуйте! Давайте зарегистрируемся.")
-        await message.answer("Введите ФИО:", reply_markup=back_kb)
+        await message.answer("Здравствуйте! Давайте зарегистрируемся.\nВведите ФИО:", reply_markup=back_kb)
         await state.set_state(Registration.fio)
 
 
 @dp.message(F.text == "Назад")
 async def universal_back(message: Message, state: FSMContext):
     current_state = await state.get_state()
-
+    
     if current_state == Form.issue_description.state:
-        await message.answer("Вернулись к выбору робота", reply_markup=back_kb)
         await process_service(message, state)
         return
-
     if current_state == Form.robot_select.state:
-        await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
         await state.set_state(Form.menu)
+        await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
         return
-
-    if current_state == Form.ask_attach.state or current_state == Form.wait_attach.state:
-        await message.answer("Вернулись к описанию проблемы", reply_markup=back_kb)
+    if current_state in (Form.ask_attach.state, Form.wait_attach.state):
         await state.set_state(Form.issue_description)
-        return
-
-    if current_state and current_state.startswith('Registration'):
-        prev_states = {
-            Registration.inn.state: (Registration.fio.state, "Введите ФИО:"),
-            Registration.phone.state: (Registration.inn.state, "Введите ИНН (10 или 12 цифр):"),
-            Registration.filial_name.state: (Registration.phone.state, "Введите номер телефона:"),
-            Registration.filial_city.state: (Registration.filial_name.state, "Введите название филиала:"),
-            Registration.filial_street.state: (Registration.filial_city.state, "Введите город филиала:"),
-            Registration.filial_building.state: (Registration.filial_street.state, "Введите улицу филиала:"),
-        }
-        prev_state, prev_question = prev_states.get(current_state, (Registration.fio.state, "Введите ФИО:"))
-        await state.set_state(prev_state)
-        await message.answer(f"Вернулись к предыдущему шагу.\n{prev_question}", reply_markup=back_kb)
+        await message.answer("Вернулись к описанию проблемы", reply_markup=back_kb)
         return
 
     await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
     await state.set_state(Form.menu)
 
 
+# === Главное меню ===
 @dp.message(Form.menu, F.text == "Обслуживание")
 async def process_service(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -255,7 +233,6 @@ async def process_service(message: Message, state: FSMContext):
         return
 
     robots = await get_client_robots(contact["id"])
-
     kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True, row_width=2)
 
     if not robots:
@@ -273,20 +250,19 @@ async def process_service(message: Message, state: FSMContext):
 
 @dp.message(Form.robot_select)
 async def process_robot_select(message: Message, state: FSMContext):
-    serial = message.text.strip()
-    if serial == "Назад":
-        await message.answer("Вернулись в меню", reply_markup=main_menu_kb)
+    if message.text == "Назад":
         await state.set_state(Form.menu)
+        await message.answer("Вернулись в меню", reply_markup=main_menu_kb)
         return
 
     data = await state.get_data()
     robots = await get_client_robots(data["contact"]["id"])
-    if serial not in robots:
+    if message.text not in robots:
         await message.answer("Пожалуйста, выберите робота из списка!")
         return
 
-    await state.update_data(serial_number=serial)
-    await message.answer(f"Выбран робот: <b>{serial}</b>\n\nОпишите проблему (минимум 5 символов):", reply_markup=back_kb)
+    await state.update_data(serial_number=message.text)
+    await message.answer(f"Выбран робот: <b>{message.text}</b>\n\nОпишите проблему (минимум 5 символов):", reply_markup=back_kb)
     await state.set_state(Form.issue_description)
 
 
@@ -294,28 +270,18 @@ async def process_robot_select(message: Message, state: FSMContext):
 async def check_status(message: Message, state: FSMContext):
     data = await state.get_data()
     contact = data.get("contact")
-    if not contact or "id" not in contact:
+    if not contact:
         await message.answer("Ошибка: контакт не найден. Начните заново /start")
         return
 
     robots = await get_client_robots(contact["id"])
     if robots:
-        await message.answer(
-            "✅ Авторизация пройдена!\n"
-            f"У вас уже добавлено {len(robots)} робот(ов):\n" + "\n".join(f"• {r}" for r in robots) +
-            "\n\nМожете создавать заявки на обслуживание.",
-            reply_markup=main_menu_kb
-        )
+        await message.answer(f"✅ У вас добавлено {len(robots)} робот(ов):\n" + "\n".join(f"• {r}" for r in robots), reply_markup=main_menu_kb)
     else:
-        await message.answer(
-            "⏳ Авторизация ещё не завершена.\n"
-            "Менеджер проверяет ваши данные. Обычно до 2 часов.\n\n"
-            "Попробуйте нажать «Проверить статус» позже.",
-            reply_markup=main_menu_kb
-        )
+        await message.answer("⏳ Авторизация ещё не завершена.\nМенеджер проверяет ваши данные.", reply_markup=main_menu_kb)
 
 
-# === РЕГИСТРАЦИЯ (все шаги) ===
+# === Регистрация ===
 @dp.message(Registration.fio)
 async def reg_fio(message: Message, state: FSMContext):
     await state.update_data(fio=message.text)
@@ -366,27 +332,25 @@ async def reg_filial_street(message: Message, state: FSMContext):
 @dp.message(Registration.filial_building)
 async def reg_filial_building(message: Message, state: FSMContext):
     data = await state.get_data()
-    telegram_id = message.from_user.id
     contact_id = await create_amo_contact(
-        data['fio'], data['inn'], data['phone'], telegram_id,
+        data['fio'], data['inn'], data['phone'], message.from_user.id,
         data['filial_name'], data['filial_city'], data['filial_street'], message.text
     )
     if contact_id:
-        await message.answer("Данные на модерации, ваша тех поддержка будет активированна в течении 2х часов", reply_markup=main_menu_kb)
+        await message.answer("✅ Данные отправлены на модерацию!\nВаша техподдержка будет активирована в течение 2 часов.", reply_markup=main_menu_kb)
         await state.update_data(contact={"id": contact_id})
         await state.set_state(Form.menu)
     else:
         await message.answer("Ошибка регистрации. Попробуйте позже /start")
 
 
-# === СОЗДАНИЕ ЗАЯВКИ ===
+# === Создание заявки ===
 @dp.message(Form.issue_description)
 async def process_description(message: Message, state: FSMContext):
-    desc = message.text.strip()
-    if len(desc) < 5:
+    if len(message.text.strip()) < 5:
         await message.answer("Описание слишком короткое. Минимум 5 символов:", reply_markup=back_kb)
         return
-    await state.update_data(issue_description=desc)
+    await state.update_data(issue_description=message.text.strip())
     await message.answer("Прикрепить фото/видео?", reply_markup=attach_choice_kb)
     await state.set_state(Form.ask_attach)
 
@@ -402,36 +366,21 @@ async def ask_attach_no(message: Message, state: FSMContext):
     await process_finish(message, state)
 
 
-@dp.message(Form.wait_attach, F.photo | F.document | F.video | F.text == "Готово, отправить заявку")
+@dp.message(Form.wait_attach, (F.photo | F.document | F.video | F.text == "Готово, отправить заявку"))
 async def process_wait_attach(message: Message, state: FSMContext):
     data = await state.get_data()
-    attachments = data.get("attachments", []) or []
+    attachments = data.get("attachments", [])
 
     if message.photo:
         file_id = message.photo[-1].file_id
-        mime = "image/jpeg"
-        ext = ".jpg"
-        filename = f"problem_photo_{len(attachments) + 1}{ext}"
-        attachments.append((file_id, mime, filename))
+        attachments.append((file_id, "image/jpeg", f"photo_{len(attachments)+1}.jpg"))
         await message.answer("Фото добавлено. Можно ещё или «Готово»:", reply_markup=done_kb)
-
     elif message.document:
-        file_id = message.document.file_id
-        mime = message.document.mime_type or "application/octet-stream"
-        orig_name = message.document.file_name or f"document_{len(attachments) + 1}"
-        ext = os.path.splitext(orig_name)[1] or ".bin"
-        filename = orig_name
-        attachments.append((file_id, mime, filename))
+        attachments.append((message.document.file_id, message.document.mime_type or "application/octet-stream", message.document.file_name or "document"))
         await message.answer("Документ добавлен. Можно ещё или «Готово»:", reply_markup=done_kb)
-
     elif message.video:
-        file_id = message.video.file_id
-        mime = "video/mp4"
-        ext = ".mp4"
-        filename = f"problem_video_{len(attachments) + 1}{ext}"
-        attachments.append((file_id, mime, filename))
+        attachments.append((message.video.file_id, "video/mp4", f"video_{len(attachments)+1}.mp4"))
         await message.answer("Видео добавлено. Можно ещё или «Готово»:", reply_markup=done_kb)
-
     elif message.text == "Готово, отправить заявку":
         await process_finish(message, state)
         return
@@ -443,56 +392,44 @@ async def process_finish(message: Message, state: FSMContext):
     data = await state.get_data()
     contact = data.get("contact")
     if not contact or "id" not in contact:
-        await message.answer("Ошибка: контакт не найден. Начните заново /start")
+        await message.answer("Ошибка: контакт не найден.")
         return
 
-    contact_id = contact["id"]
-    serial = data.get("serial_number", "не указан")
-    description = data.get("issue_description", "").strip()
-    attachments = data.get("attachments", []) or []
+    lead_id = await create_amo_lead(
+        contact["id"],
+        data.get("issue_description", ""),
+        data.get("serial_number", "не указан")
+    )
 
-    full_description = f"Проблема: {description}\nСерийный номер: {serial}"
-
-    lead_id = await create_amo_lead(contact_id, full_description, serial)
     if not lead_id:
         await message.answer("Не удалось создать заявку. Попробуйте позже.")
         return
 
+    # Загрузка файлов
     uploaded = 0
-    for att in attachments:
-        file_id, mime, filename = att
+    for file_id, mime, filename in data.get("attachments", []):
         try:
             file = await bot.get_file(file_id)
             bytes_io = io.BytesIO()
             await bot.download_file(file.file_path, bytes_io)
-            bytes_io.seek(0)
-
-            success = await upload_file_to_amo_lead(lead_id, bytes_io.read(), filename)
-            if success:
+            if await upload_file_to_amo_lead(lead_id, bytes_io.getvalue(), filename):
                 uploaded += 1
-                logging.info(f"Файл {filename} успешно загружен в сделку {lead_id}")
-            else:
-                logging.warning(f"Файл {filename} не загружен (amo вернул не 200)")
         except Exception as e:
-            logging.error(f"Ошибка загрузки файла {file_id} ({filename}): {e}")
-
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Создать ещё одну заявку")],
-        [KeyboardButton(text="Вернуться в меню")]
-    ], resize_keyboard=True)
+            logging.error(f"Ошибка загрузки файла: {e}")
 
     await message.answer(
-        f"✅ Заявка создана!\n"
-        f"Сделка №{lead_id}\n"
-        f"Описание: {description}\n"
+        f"✅ Заявка успешно создана!\n"
+        f"Номер сделки: {lead_id}\n"
         f"Прикреплено файлов: {uploaded}\n\n"
         f"Что дальше?",
-        reply_markup=kb
+        reply_markup=new_request_kb
     )
     await state.set_state(Form.menu)
+    await state.update_data(attachments=[])
 
 
-@dp.message(Form.menu, F.text.in_(["Создать ещё одну заявку", "Обслуживание"]))
+# === Дополнительные кнопки ===
+@dp.message(F.text.in_(["Создать ещё одну заявку", "Обслуживание"]))
 async def start_new_request(message: Message, state: FSMContext):
     await process_service(message, state)
 
@@ -500,26 +437,30 @@ async def start_new_request(message: Message, state: FSMContext):
 @dp.message(F.text == "Вернуться в меню")
 async def back_to_menu(message: Message, state: FSMContext):
     await state.set_state(Form.menu)
-    await message.answer("Вернулись в главное меню", reply_markup=main_menu_kb)
+    await message.answer("Главное меню", reply_markup=main_menu_kb)
 
 
-@dp.message(F.text == "/test_amo")
-async def test_amo(message: Message):
-    headers = {"Authorization": f"Bearer {AMO_TOKEN}"}
-    url = f"{AMO_API_BASE}/account"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                text = await resp.text()
-                short = text[:800] + "..." if len(text) > 800 else text
-                await message.answer(f"<b>Тест API</b>\nСтатус: {resp.status}\n<pre>{short}</pre>", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+# ==================== ДЕБАГ ХЕНДЛЕР (очень важен!) ====================
+@dp.message()
+async def echo_all(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    logging.info(f"Необработанное сообщение: '{message.text}' | State: {current_state} | User: {message.from_user.id}")
+    await message.answer(f"Бот получил ваше сообщение, но не нашёл обработчик.\n\nТекст: {message.text}\nСостояние: {current_state}")
 
 
+# ==================== ЗАПУСК ====================
 async def main():
-    print("KubonSupportBot запущен (финальная версия с исправленным 'Назад', сохранением контакта и описанием в заявке)")
-    await dp.start_polling(bot, drop_pending_updates=True)
+    print("KubonSupportBot запущен (исправленная версия)")
+    
+    # Удаляем webhook — важно для BotHost
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Webhook успешно удалён")
+
+    await dp.start_polling(
+        bot,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types()
+    )
 
 
 if __name__ == "__main__":
